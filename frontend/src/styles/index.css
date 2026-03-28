@@ -1,0 +1,135 @@
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+body {
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  color: #222;
+  background: #f5f7fa;
+  line-height: 1.5;
+}
+
+/* ── Inputs ────────────────────────────────────────────────────────────────── */
+input, select, textarea {
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 0.5px solid #ccc;
+  border-radius: 6px;
+  background: #fff;
+  color: #222;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: #2E75B6;
+  box-shadow: 0 0 0 2px rgba(46,117,182,0.15);
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────────── */
+button {
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border: 0.5px solid #aaa;
+  border-radius: 6px;
+  background: transparent;
+  color: #222;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+button:hover  { background: #f0f0f0; }
+button:active { transform: scale(0.98); }
+
+button.primary {
+  background: #1E4E79;
+  color: #fff;
+  border-color: #1E4E79;
+}
+button.primary:hover  { background: #2E75B6; border-color: #2E75B6; }
+
+button.danger {
+  background: #A32D2D;
+  color: #fff;
+  border-color: #A32D2D;
+}
+button.danger:hover { background: #7a2020; }
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────────── */
+.card {
+  background: #fff;
+  border: 0.5px solid #ddd;
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+
+/* ── Status badges ─────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 10px;
+  text-transform: capitalize;
+}
+.badge-pending    { background: #FFFF8C; color: #555; }
+.badge-reviewed   { background: #BDD7EE; color: #1E4E79; }
+.badge-signed_off { background: #E2EFDA; color: #3B6D11; }
+.badge-calculated { background: #C6EFCE; color: #276221; }
+.badge-approved   { background: #375623; color: #fff; }
+.badge-rejected   { background: #FCEBEB; color: #A32D2D; }
+
+/* ── Flag indicators ───────────────────────────────────────────────────────── */
+.flag-amber { background: #FFFF8C; }
+.flag-red   { background: #FFCCCC; }
+
+/* ── Table ─────────────────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; border-radius: 8px; border: 0.5px solid #ddd; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+}
+th {
+  background: #2E75B6;
+  color: #fff;
+  font-weight: 500;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+td {
+  padding: 6px 10px;
+  border-bottom: 0.5px solid #eee;
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f8fbff; }
+
+/* ── Number formatting ─────────────────────────────────────────────────────── */
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Utility ───────────────────────────────────────────────────────────────── */
+.mt-8  { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+.gap-8  { gap: 8px; }
+.gap-16 { gap: 16px; }
+.flex   { display: flex; }
+.flex-center { display: flex; align-items: center; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.text-muted { color: #666; }
+.text-small { font-size: 12px; }
+.bold { font-weight: 500; }
