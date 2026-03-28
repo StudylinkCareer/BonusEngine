@@ -8,11 +8,11 @@ export default function Review() {
   const { id } = useParams()
   const navigate = useNavigate()
 
-  const [run, setRun]       = useState(null)
-  const [cases, setCases]   = useState([])
+  const [run, setRun]         = useState(null)
+  const [cases, setCases]     = useState([])
   const [loading, setLoading] = useState(true)
   const [calculating, setCalculating] = useState(false)
-  const [error, setError]   = useState(null)
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
     Promise.all([getRun(id), getCases(id)])
@@ -23,6 +23,11 @@ export default function Review() {
 
   const handleCaseUpdated = (updated) => {
     setCases(prev => prev.map(c => c.id === updated.id ? updated : c))
+  }
+
+  const handleMarkReviewed = async () => {
+    await signOff(id, 'reviewed', '')
+    setRun(r => ({ ...r, status: 'reviewed' }))
   }
 
   const handleSignOff = async () => {
@@ -67,6 +72,9 @@ export default function Review() {
           {flaggedCount > 0 && (
             <FlagBadge type="amber" label={`${flaggedCount} need review`} />
           )}
+          {run.status === 'pending' && (
+            <button onClick={handleMarkReviewed}>Mark as reviewed</button>
+          )}
           {run.status === 'reviewed' && (
             <button onClick={handleSignOff}>Sign off</button>
           )}
@@ -96,11 +104,11 @@ export default function Review() {
         </div>
       )}
 
-      {/* Flagged cases first */}
+      {/* Flagged notice */}
       {flaggedCount > 0 && (
         <div style={{ marginBottom: '8px' }}>
           <p style={{ fontSize: '12px', color: '#7a5c00', marginBottom: '8px' }}>
-            ⚠ {flaggedCount} case(s) flagged amber — review package type and service fee before calculating.
+            ⚠ {flaggedCount} case(s) flagged — review package type and service fee before calculating.
           </p>
         </div>
       )}
