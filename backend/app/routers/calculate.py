@@ -18,7 +18,7 @@ from ..engine.constants import OFFICE_HCM, OFFICE_HN, OFFICE_DN, OFFICE_DEFAULT
 
 router = APIRouter()
 
-ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "backend/data/config/engine.xlsm")
+ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "data/config/engine.xlsm")
 
 
 def _db_case_to_record(case: Case) -> CaseRecord:

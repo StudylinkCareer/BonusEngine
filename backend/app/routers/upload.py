@@ -17,7 +17,7 @@ from ..engine.config import load_config
 
 router = APIRouter()
 
-ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "backend/data/config/engine.xlsm")
+ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "data/config/engine.xlsm")
 
 
 def _get_config(run_year: int):
