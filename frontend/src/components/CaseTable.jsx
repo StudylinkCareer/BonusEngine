@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import FlagBadge from './FlagBadge.jsx'
-import { updateCase } from '../api/client.js'
+import { updateCase } from '../api/client.jsx'
 
 const fmt = (n) => n ? Number(n).toLocaleString('vi-VN') : '—'
 

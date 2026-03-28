@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { uploadCRM, uploadTemplate } from '../api/client.js'
+import { uploadCRM, uploadTemplate } from '../api/client.jsx'
 
 const MONTHS = [
   'January','February','March','April','May','June',

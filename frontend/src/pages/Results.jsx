@@ -3,7 +3,7 @@
 // =============================================================================
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
-import { getRun, exportRun } from '../api/client.js'
+import { getRun, exportRun } from '../api/client.jsx'
 import BonusResult from '../components/BonusResult.jsx'
 import CaseTable from '../components/CaseTable.jsx'
 

@@ -1,10 +1,11 @@
+import { useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import NavBar from './components/NavBar.jsx'
 import Upload from './pages/Upload.jsx'
 import Review from './pages/Review.jsx'
 import Results from './pages/Results.jsx'
 import History from './pages/History.jsx'
-import { useAuth } from './api/client.js'
+import { useAuth } from './api/client.jsx'
 
 export default function App() {
   const { user, loading } = useAuth()
@@ -39,8 +40,8 @@ export default function App() {
 
 function LoginPage() {
   const { login, error } = useAuth()
-  const [username, setUsername] = React.useState('')
-  const [password, setPassword] = React.useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
 
   const handleSubmit = async (e) => {
     e.preventDefault()

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getRuns } from '../api/client.js'
+import { getRuns } from '../api/client.jsx'
 
 const fmt = (n) => n ? Number(n).toLocaleString('vi-VN') : '—'
 

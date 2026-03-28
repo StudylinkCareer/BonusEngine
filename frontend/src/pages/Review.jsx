@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getRun, getCases, signOff, calculate } from '../api/client.js'
+import { getRun, getCases, signOff, calculate } from '../api/client.jsx'
 import CaseTable from '../components/CaseTable.jsx'
 import FlagBadge from '../components/FlagBadge.jsx'
 

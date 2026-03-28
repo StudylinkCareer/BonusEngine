@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { useAuth } from '../api/client.js'
+import { useAuth } from '../api/client.jsx'
 
 export default function NavBar({ user }) {
   const { logout } = useAuth()
