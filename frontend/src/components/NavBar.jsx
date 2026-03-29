@@ -1,61 +1,70 @@
-import { Link, useLocation } from 'react-router-dom'
-import { useAuth } from '../api/client.jsx'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { useAuth } from '../api/AuthProvider.jsx'
 
 export default function NavBar({ user }) {
+  const navigate  = useNavigate()
+  const location  = useLocation()
   const { logout } = useAuth()
-  const { pathname } = useLocation()
 
-  const links = [
-    { to: '/history', label: 'History' },
-    { to: '/upload',  label: 'Upload' },
+  const nav = [
+    { path:'/dashboard', label:'Dashboard', icon:'▦' },
+    { path:'/upload',    label:'Upload',    icon:'↑' },
   ]
-
-  const active = { borderBottom: '2px solid #fff', paddingBottom: '2px' }
 
   return (
     <nav style={{
-      background: '#1E4E79',
-      padding: '0 24px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      height: '48px',
+      position:'fixed', left:0, top:0, bottom:0, width:220,
+      background:'var(--navy)', display:'flex', flexDirection:'column',
+      padding:'0 0 24px', zIndex:100,
+      boxShadow:'2px 0 12px rgba(0,0,0,0.15)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-        <span style={{ color: '#fff', fontWeight: '500', fontSize: '15px' }}>
-          StudyLink Bonus Engine
-        </span>
-        {links.map(l => (
-          <Link
-            key={l.to}
-            to={l.to}
-            style={{
-              color: '#BDD7EE',
-              textDecoration: 'none',
-              fontSize: '13px',
-              ...(pathname.startsWith(l.to) ? active : {}),
-            }}
-          >
-            {l.label}
-          </Link>
-        ))}
+      {/* Logo */}
+      <div style={{ padding:'28px 24px 20px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ color:'var(--gold)', fontSize:11, fontWeight:700, letterSpacing:3, marginBottom:4 }}>
+          STUDYLINK
+        </div>
+        <div style={{ color:'rgba(255,255,255,0.4)', fontSize:11 }}>Bonus Engine</div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-        <span style={{ color: '#BDD7EE', fontSize: '13px' }}>
-          {user?.full_name || user?.username}
-        </span>
-        <button
-          onClick={logout}
-          style={{
-            background: 'transparent',
-            border: '0.5px solid #BDD7EE',
-            color: '#BDD7EE',
-            fontSize: '12px',
-            padding: '4px 12px',
-            borderRadius: '4px',
-            cursor: 'pointer',
-          }}
-        >
+
+      {/* Nav links */}
+      <div style={{ flex:1, padding:'16px 12px' }}>
+        {nav.map(item => {
+          const active = location.pathname.startsWith(item.path)
+          return (
+            <button key={item.path} onClick={() => navigate(item.path)}
+              style={{
+                display:'flex', alignItems:'center', gap:10, width:'100%',
+                padding:'10px 12px', borderRadius:8, border:'none', cursor:'pointer',
+                marginBottom:4, fontSize:13, fontWeight: active ? 600 : 400,
+                background: active ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: active ? '#fff' : 'rgba(255,255,255,0.55)',
+                transition:'all 0.15s',
+              }}>
+              <span style={{ fontSize:16 }}>{item.icon}</span>
+              {item.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* User block */}
+      <div style={{ padding:'16px 16px 0', borderTop:'1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ color:'rgba(255,255,255,0.35)', fontSize:10, marginBottom:8, letterSpacing:1 }}>
+          SIGNED IN AS
+        </div>
+        <div style={{ color:'#fff', fontSize:12, fontWeight:600, marginBottom:2 }}>
+          {user?.name || user?.username}
+        </div>
+        <div style={{ color:'rgba(255,255,255,0.4)', fontSize:11, marginBottom:12, textTransform:'capitalize' }}>
+          {user?.role?.replace('_',' ')}
+        </div>
+        <button onClick={logout} style={{
+          width:'100%', padding:'7px 0', borderRadius:6,
+          border:'1px solid rgba(255,255,255,0.15)',
+          background:'transparent', color:'rgba(255,255,255,0.5)',
+          fontSize:11, cursor:'pointer', fontFamily:'var(--font)',
+          transition:'all 0.15s',
+        }}>
           Sign out
         </button>
       </div>

@@ -1,220 +1,710 @@
-# =============================================================================
-# routers/reports.py
-# Run history, results display, and Excel export endpoints.
-# =============================================================================
+"""
+backend/app/routers/reports.py
+Router supporting the full UI workflow:
+  GET   /reports/                                  — list all reports (dashboard queue)
+  GET   /reports/{id}                              — single report metadata
+  POST  /reports/upload                            — upload CRM file → engine → cases stored
+  GET   /reports/{id}/cases                        — all cases for review table
+  GET   /reports/{id}/trail                        — full field-change audit log
+  PATCH /reports/{id}/cases/{cid}/fields/{field}   — edit one field (with mandatory comment)
+  POST  /reports/{id}/submit                       — Bonus Admin submits for manager approval
+  POST  /reports/{id}/approve                      — Manager/Admin approves → calculation triggered
+  POST  /reports/{id}/return                       — Manager returns for revision
+  GET   /reports/{id}/bonus-report                 — final Báo cáo data
+  GET   /reports/{id}/pdf                          — download PDF
+  POST  /reports/{id}/email                        — email to staff or payroll (stub)
+"""
 
 import io
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+import os
+import secrets
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 
-from ..database import get_db
-from ..models import Run, Case, User
-from ..schemas import RunOut, RunSummary
-from ..routers.auth import get_current_user
+# ── Auth — reuse existing dependency ─────────────────────────────
+from .auth import get_current_user
+from ..models import User
 
+# ── Engine imports ────────────────────────────────────────────────
+ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "data/config/engine.xlsm")
+
+try:
+    from ..engine.config import load_config
+    from ..engine.input import parse_crm_report
+    from ..engine.classify import classify_cases
+    from ..engine.calc import calculate_bonuses
+    ENGINE_AVAILABLE = True
+except ImportError:
+    ENGINE_AVAILABLE = False
+
+# ── Raw SQLite for new tables ─────────────────────────────────────
+# These three tables (reports, report_cases, field_changes) are separate
+# from the existing SQLAlchemy-managed tables. We use a raw SQLite
+# connection so we don't need to touch your existing models/migrations.
+
+DB_PATH = os.environ.get("DB_PATH", "bonusengine.db")
+
+def get_sqlite():
+    """Raw SQLite connection for reports/cases/trail tables."""
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+# ── Create tables on import ───────────────────────────────────────
+def _ensure_schema():
+    with get_sqlite() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id           TEXT PRIMARY KEY,
+            staff_name   TEXT NOT NULL,
+            month        INTEGER NOT NULL,
+            year         INTEGER NOT NULL,
+            office       TEXT NOT NULL,
+            status       TEXT DEFAULT 'pending',
+            uploaded_by  TEXT,
+            uploaded_at  TEXT DEFAULT (datetime('now')),
+            approved_by  TEXT,
+            approved_at  TEXT,
+            updated_at   TEXT DEFAULT (datetime('now')),
+            notes        TEXT,
+            target       INTEGER,
+            enrolled     INTEGER,
+            tier         TEXT,
+            engine_total INTEGER DEFAULT 0,
+            manual_total INTEGER DEFAULT 0,
+            gap          INTEGER DEFAULT 0,
+            base_rate    INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS report_cases (
+            id                  TEXT PRIMARY KEY,
+            report_id           TEXT NOT NULL REFERENCES reports(id),
+            contract_id         TEXT,
+            student_name        TEXT,
+            student_id          TEXT,
+            app_status          TEXT,
+            client_type         TEXT,
+            country             TEXT,
+            institution         TEXT,
+            refer_agent         TEXT,
+            course_start        TEXT,
+            visa_date           TEXT,
+            notes               TEXT,
+            institution_type    TEXT,
+            service_fee_type    TEXT,
+            package_type        TEXT,
+            is_vietnam          INTEGER DEFAULT 0,
+            is_agent_referred   INTEGER DEFAULT 0,
+            office              TEXT,
+            row_type            TEXT DEFAULT 'BASE',
+            scheme              TEXT,
+            counts_as_enrolled  INTEGER DEFAULT 0,
+            prior_month_rate    TEXT,
+            deferral            TEXT DEFAULT 'NONE',
+            handover            TEXT DEFAULT 'NO',
+            target_owner        TEXT,
+            bonus_enrolled      INTEGER DEFAULT 0,
+            bonus_priority      INTEGER DEFAULT 0,
+            note_enrolled       TEXT,
+            note_enrolled_2     TEXT,
+            note_priority       TEXT,
+            gap                 INTEGER DEFAULT 0,
+            section             TEXT,
+            UNIQUE(report_id, contract_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS field_changes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id   TEXT NOT NULL,
+            case_id     TEXT NOT NULL,
+            field_name  TEXT NOT NULL,
+            field_label TEXT,
+            old_value   TEXT,
+            new_value   TEXT,
+            comment     TEXT,
+            changed_by  TEXT NOT NULL,
+            changed_at  TEXT DEFAULT (datetime('now'))
+        );
+        """)
+
+_ensure_schema()
+
+# ── Router ────────────────────────────────────────────────────────
 router = APIRouter()
 
+# ── Field whitelists ──────────────────────────────────────────────
+EDITABLE_FIELDS = {
+    # Engine-classified — require a comment when changed
+    "institution_type", "service_fee_type", "package_type",
+    "office", "row_type", "scheme", "note_enrolled",
+    # User-input — comment optional unless engine had a value
+    "prior_month_rate", "deferral", "handover", "target_owner",
+}
+ENGINE_FIELDS = {
+    "institution_type", "service_fee_type", "package_type",
+    "office", "row_type", "scheme", "note_enrolled",
+}
 
-@router.get("/", response_model=List[RunSummary])
-def list_runs(
-    staff_name: Optional[str] = Query(None),
-    run_year: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
+
+# ─────────────────────────────────────────────────────────────────
+# LIST
+# ─────────────────────────────────────────────────────────────────
+@router.get("/")
+def list_reports(current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        rows = conn.execute("""
+            SELECT r.*, COUNT(c.id) AS case_count
+            FROM reports r
+            LEFT JOIN report_cases c ON c.report_id = r.id
+            GROUP BY r.id
+            ORDER BY r.uploaded_at DESC
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────
+# GET SINGLE REPORT
+# ─────────────────────────────────────────────────────────────────
+@router.get("/{report_id}")
+def get_report(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        row = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Report not found")
+    return dict(row)
+
+
+# ─────────────────────────────────────────────────────────────────
+# UPLOAD
+# ─────────────────────────────────────────────────────────────────
+@router.post("/upload")
+async def upload_report(
+    file:       UploadFile = File(...),
+    staff_name: str        = Form(...),
+    month:      int        = Form(...),
+    year:       int        = Form(...),
+    office:     str        = Form(...),
+    notes:      str        = Form(""),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Returns run history. Admins see all runs.
-    Non-admins see only their own staff's runs.
-    """
-    query = db.query(Run)
-
-    # Non-admins restricted to their own staff name
-    if not current_user.is_admin and current_user.staff_name:
-        query = query.filter(Run.staff_name == current_user.staff_name)
-    elif staff_name:
-        query = query.filter(Run.staff_name == staff_name)
-
-    if run_year:
-        query = query.filter(Run.run_year == run_year)
-    if status:
-        query = query.filter(Run.status == status)
-
-    return query.order_by(Run.run_year.desc(), Run.run_month.desc()).all()
+    content   = await file.read()
+    report_id = secrets.token_hex(8)
+    import tempfile
+    tmp_path = os.path.join(tempfile.gettempdir(), f"{report_id}_{file.filename}")
 
 
-@router.get("/{run_id}", response_model=RunOut)
-def get_run(
-    run_id: int,
-    db: Session = Depends(get_db),
+    with open(tmp_path, "wb") as f:
+        f.write(content)
+
+    parsed_cases = []
+    target, tier, enrolled, engine_total = 13, None, 0, 0
+
+    if ENGINE_AVAILABLE:
+        try:
+            cfg = load_config(ENGINE_WORKBOOK)
+            raw_cases, _  = parse_crm_report(tmp_path, cfg)
+            classified    = classify_cases(raw_cases, cfg, staff_name, year, month, {})
+            calculated, tier, tgt, enr = calculate_bonuses(
+                classified, staff_name, year, month, cfg)
+            target, enrolled = tgt, enr
+
+            for c in calculated:
+                parsed_cases.append({
+                    "id":                f"{report_id}_{c.contract_id}",
+                    "contract_id":       c.contract_id,
+                    "student_name":      getattr(c, "student_name", ""),
+                    "student_id":        getattr(c, "student_id", ""),
+                    "app_status":        c.app_status,
+                    "client_type":       c.client_type,
+                    "country":           c.country,
+                    "institution":       c.institution,
+                    "refer_agent":       getattr(c, "refer_agent", ""),
+                    "institution_type":  c.institution_type,
+                    "service_fee_type":  c.service_fee_type,
+                    "package_type":      c.package_type,
+                    "is_vietnam":        int(c.is_vietnam),
+                    "is_agent_referred": int(c.is_agent_referred),
+                    "office":            getattr(c, "office", office),
+                    "row_type":          getattr(c, "row_type", "BASE"),
+                    "scheme":            getattr(c, "scheme", ""),
+                    "counts_as_enrolled": int(getattr(c, "counts_as_enrolled", False)),
+                    "bonus_enrolled":    c.bonus_enrolled,
+                    "note_enrolled":     c.note_enrolled,
+                    "section":           "enrolled" if getattr(c, "counts_as_enrolled", False) else "closed",
+                })
+            print(f"[UPLOAD DEBUG] Cases from engine: {len(parsed_cases)}")
+            engine_total = sum(c.get("bonus_enrolled", 0) for c in parsed_cases)
+
+        except Exception as e:
+            import traceback
+            print(f"[ENGINE ERROR] {e}")
+            traceback.print_exc()
+
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+
+    uploader = current_user.full_name or current_user.username
+
+    with get_sqlite() as conn:
+        conn.execute("""
+            INSERT INTO reports
+              (id, staff_name, month, year, office, status, uploaded_by,
+               notes, target, enrolled, tier, engine_total)
+            VALUES (?, ?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?)
+        """, (report_id, staff_name, month, year, office,
+              uploader, notes, target, enrolled, tier, engine_total))
+
+        for c in parsed_cases:
+            conn.execute("""
+                INSERT OR REPLACE INTO report_cases
+                  (id, report_id, contract_id, student_name, student_id,
+                   app_status, client_type, country, institution, refer_agent,
+                   institution_type, service_fee_type, package_type,
+                   is_vietnam, is_agent_referred, office, row_type, scheme,
+                   counts_as_enrolled, bonus_enrolled, note_enrolled, section)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                c["id"], report_id, c["contract_id"], c["student_name"], c.get("student_id", ""),
+                c["app_status"], c.get("client_type", ""), c.get("country", ""),
+                c.get("institution", ""), c.get("refer_agent", ""),
+                c.get("institution_type", ""), c.get("service_fee_type", ""),
+                c.get("package_type", ""), c.get("is_vietnam", 0),
+                c.get("is_agent_referred", 0), c.get("office", office),
+                c.get("row_type", "BASE"), c.get("scheme", ""),
+                c.get("counts_as_enrolled", 0), c.get("bonus_enrolled", 0),
+                c.get("note_enrolled", ""), c.get("section", "closed"),
+            ))
+        conn.commit()
+
+        # Add this:
+        saved = conn.execute("SELECT COUNT(*) FROM report_cases WHERE report_id=?", (report_id,)).fetchone()[0]
+        print(f"[UPLOAD DEBUG] Cases saved to DB: {saved}")
+
+    return {
+        "id":               report_id,
+        "case_count":       len(parsed_cases),
+        "tier":             tier,
+        "target":           target,
+        "enrolled":         enrolled,
+        "engine_total":     engine_total,
+        "engine_available": ENGINE_AVAILABLE,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
+# CASES
+# ─────────────────────────────────────────────────────────────────
+@router.get("/{report_id}/cases")
+def get_cases(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
+            (report_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────
+# AUDIT TRAIL
+# ─────────────────────────────────────────────────────────────────
+@router.get("/{report_id}/trail")
+def get_trail(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT * FROM field_changes WHERE report_id = ? ORDER BY changed_at DESC",
+            (report_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────
+# EDIT FIELD (with mandatory comment for engine fields)
+# ─────────────────────────────────────────────────────────────────
+@router.patch("/{report_id}/cases/{case_id}/fields/{field}")
+def update_field(
+    report_id: str,
+    case_id:   str,
+    field:     str,
+    body:      dict,
     current_user: User = Depends(get_current_user),
 ):
-    """Returns full run detail including all cases and their bonus results."""
-    run = db.query(Run).filter(Run.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    if field not in EDITABLE_FIELDS:
+        raise HTTPException(400, f"Field '{field}' is not editable")
 
+    comment   = (body.get("comment") or "").strip()
+    new_value = body.get("value", "")
 
-@router.get("/{run_id}/export")
-def export_run(
-    run_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Exports the run results as a formatted Excel file.
-    Matches the layout of the VBA engine output tab.
-    """
-    run = db.query(Run).filter(Run.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    if run.status not in ("calculated", "approved"):
+    if field in ENGINE_FIELDS and not comment:
         raise HTTPException(
-            status_code=400,
-            detail="Run must be calculated before export"
+            422, "A comment is required when overriding an engine-suggested value"
         )
 
-    cases = db.query(Case).filter(Case.run_id == run_id).all()
+    with get_sqlite() as conn:
+        row = conn.execute(
+            f"SELECT {field} FROM report_cases WHERE id = ? AND report_id = ?",
+            (case_id, report_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Case not found")
 
-    excel_bytes = _build_excel(run, cases)
+        old_value = dict(row)[field]
 
-    filename = (f"BonusReport_{run.staff_name.replace(' ', '_')}_"
-                f"{run.run_month:02d}{run.run_year}.xlsx")
+        conn.execute(
+            f"UPDATE report_cases SET {field} = ? WHERE id = ? AND report_id = ?",
+            (new_value, case_id, report_id)
+        )
+        conn.execute("""
+            INSERT INTO field_changes
+              (report_id, case_id, field_name, field_label,
+               old_value, new_value, comment, changed_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            report_id, case_id, field,
+            field.replace("_", " ").title(),
+            str(old_value) if old_value is not None else "",
+            str(new_value),
+            comment,
+            current_user.full_name or current_user.username,
+        ))
+        conn.execute(
+            "UPDATE reports SET updated_at = datetime('now') WHERE id = ?",
+            (report_id,)
+        )
+        conn.commit()
 
-    return StreamingResponse(
-        io.BytesIO(excel_bytes),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-
-def _build_excel(run: Run, cases: list) -> bytes:
-    """Builds a formatted Excel output matching the VBA engine output layout."""
-    import openpyxl
-    from openpyxl.styles import Font, PatternFill, Alignment
-    from openpyxl.utils import get_column_letter
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = f"{run.staff_name[:15]}_{run.run_month:02d}{run.run_year}"
-
-    # Colours
-    DARK_BLUE  = "1E4E79"
-    MID_BLUE   = "2E75B6"
-    LIGHT_BLUE = "BDD7EE"
-    AMBER      = "FFFF8C"
-    GREEN      = "E2EFDA"
-    WHITE      = "FFFFFF"
-
-    def style_cell(cell, bold=False, font_color=WHITE, bg=None, size=9, wrap=False, align="left"):
-        cell.font = Font(name="Arial", size=size, bold=bold, color=font_color)
-        if bg:
-            cell.fill = PatternFill("solid", fgColor=bg)
-        cell.alignment = Alignment(wrap_text=wrap, vertical="top", horizontal=align)
-
-    # Row 1: Title
-    ws.merge_cells(f"A1:AP1")
-    ws["A1"] = (f"Bao cao Ho so - {run.staff_name} - "
-                f"Thang {run.run_month:02d}/{run.run_year}")
-    style_cell(ws["A1"], bold=True, bg=DARK_BLUE, size=11)
-    ws.row_dimensions[1].height = 24
-
-    # Row 2: Subtitle
-    ws.merge_cells("A2:AP2")
-    ws["A2"] = (f"Staff: {run.staff_name}   |   "
-                f"Period: {_month_name(run.run_month)} {run.run_year}")
-    style_cell(ws["A2"], bg=LIGHT_BLUE, font_color="000000", size=9)
-
-    # Row 3: Spacer
-    ws.row_dimensions[3].height = 6
-
-    # Row 4: Column headers
-    headers = [
-        "No.", "Student Name", "Student ID", "Contract ID", "Contract Date",
-        "Client Type", "Country", "Agent", "System", "Status",
-        "Visa Date", "Institution", "Course Start", "Course Status",
-        "Counsellor", "CO", "Pre-sales", "Incentive", "Notes",
-        "Service Fee", "Deferral", "Package", "Office", "Handover",
-        "Target Owner", "Case Trans.", "Prior Rate", "Inst. Type",
-        "Group Agent", "Targets Name", "Row Type", "Addon Code", "Addon Count",
-        "BONUS Enrolled", "Note Enrolled", "Note2", "BONUS Priority",
-        "Note Priority", "Note2", "Prior Advances", "Net Payable", "Base Rate",
-    ]
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=4, column=col_idx, value=h)
-        style_cell(cell, bold=True, bg=MID_BLUE, wrap=True)
-
-    ws.row_dimensions[4].height = 30
-
-    # Data rows
-    row_num = 5
-    total_enr = 0
-    total_pri = 0
-
-    for case in cases:
-        values = [
-            case.original_no, case.student_name, case.student_id,
-            case.contract_id, case.contract_date, case.client_type,
-            case.country, case.agent, case.system_type, case.app_status,
-            case.visa_date, case.institution, case.course_start,
-            case.course_status, case.counsellor, case.case_officer,
-            case.presales_agent, case.incentive, case.notes,
-            case.service_fee_type, case.deferral, case.package_type,
-            case.office_override, case.handover, case.target_owner,
-            case.case_transition, case.prior_month_rate, case.institution_type,
-            case.group_agent_name, case.targets_name, case.row_type,
-            case.addon_code, case.addon_count,
-            case.bonus_enrolled, case.note_enrolled, case.note_enrolled2,
-            case.bonus_priority, case.note_priority, case.note_priority2,
-            case.prior_advances, case.net_payable, case.stored_base_rate,
-        ]
-
-        is_addon = (case.row_type or "").upper() == "ADDON"
-        bg = AMBER if is_addon else None
-
-        for col_idx, val in enumerate(values, 1):
-            cell = ws.cell(row=row_num, column=col_idx, value=val)
-            cell.font = Font(name="Arial", size=9)
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
-            if bg:
-                cell.fill = PatternFill("solid", fgColor=bg)
-            if col_idx in (18, 27, 34, 37, 40, 41, 42) and isinstance(val, int):
-                cell.number_format = "#,##0"
-
-        if not is_addon:
-            total_enr += case.bonus_enrolled or 0
-            total_pri += case.bonus_priority or 0
-
-        row_num += 1
-
-    # Total row
-    ws.cell(row=row_num, column=1, value="TONG").font = Font(name="Arial", bold=True, size=9)
-    total_cell = ws.cell(row=row_num, column=34, value=total_enr + total_pri)
-    total_cell.font = Font(name="Arial", bold=True, size=9)
-    total_cell.number_format = "#,##0"
-
-    # Column widths
-    widths = {
-        1: 4, 2: 22, 3: 12, 4: 13, 5: 12, 6: 20, 7: 12,
-        8: 16, 9: 14, 10: 28, 11: 12, 12: 30, 13: 12, 14: 14,
-        15: 20, 16: 20, 17: 18, 18: 14, 19: 28, 20: 18, 21: 18,
-        22: 18, 23: 12, 24: 10, 25: 18, 26: 12, 27: 14, 28: 20,
-        29: 20, 30: 16, 31: 12, 32: 20, 33: 10, 34: 18, 35: 30,
-        36: 20, 37: 18, 38: 30, 39: 20, 40: 16, 41: 16, 42: 16,
-    }
-    for col_idx, width in widths.items():
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
-
-    output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue()
+    return {"ok": True, "field": field, "new_value": new_value}
 
 
-def _month_name(month: int) -> str:
-    names = ["", "January", "February", "March", "April", "May", "June",
-             "July", "August", "September", "October", "November", "December"]
-    return names[month] if 1 <= month <= 12 else str(month)
+# ─────────────────────────────────────────────────────────────────
+# SUBMIT (Bonus Admin → Manager)
+# ─────────────────────────────────────────────────────────────────
+@router.post("/{report_id}/submit")
+def submit_report(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        conn.execute(
+            "UPDATE reports SET status = 'submitted', updated_at = datetime('now') WHERE id = ?",
+            (report_id,)
+        )
+        conn.commit()
+    return {"ok": True, "status": "submitted"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# APPROVE (Manager / Admin only)
+# ─────────────────────────────────────────────────────────────────
+@router.post("/{report_id}/approve")
+def approve_report(report_id: str, current_user: User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(403, "Only administrators can approve reports")
+
+    approver = current_user.full_name or current_user.username
+
+    with get_sqlite() as conn:
+        conn.execute("""
+            UPDATE reports
+            SET status      = 'approved',
+                approved_by = ?,
+                approved_at = datetime('now'),
+                updated_at  = datetime('now')
+            WHERE id = ?
+        """, (approver, report_id))
+        conn.commit()
+
+    return {"ok": True, "status": "approved"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# RETURN (Manager sends back for revision)
+# ─────────────────────────────────────────────────────────────────
+@router.post("/{report_id}/return")
+def return_report(
+    report_id: str,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+):
+    comment = (body.get("comment") or "").strip()
+
+    with get_sqlite() as conn:
+        conn.execute(
+            "UPDATE reports SET status = 'returned', updated_at = datetime('now') WHERE id = ?",
+            (report_id,)
+        )
+        if comment:
+            conn.execute("""
+                INSERT INTO field_changes
+                  (report_id, case_id, field_name, field_label,
+                   old_value, new_value, comment, changed_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                report_id, "REPORT", "status", "Report Status",
+                "submitted", "returned", comment,
+                current_user.full_name or current_user.username,
+            ))
+        conn.commit()
+
+    return {"ok": True, "status": "returned"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# BONUS REPORT DATA
+# ─────────────────────────────────────────────────────────────────
+@router.get("/{report_id}/bonus-report")
+def get_bonus_report(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        r = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        cases = conn.execute(
+            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
+            (report_id,)
+        ).fetchall()
+    if not r:
+        raise HTTPException(404, "Report not found")
+    return {**dict(r), "cases": [dict(c) for c in cases]}
+
+
+# ─────────────────────────────────────────────────────────────────
+# PDF DOWNLOAD
+# ─────────────────────────────────────────────────────────────────
+@router.get("/{report_id}/pdf")
+def download_pdf(report_id: str, current_user: User = Depends(get_current_user)):
+    with get_sqlite() as conn:
+        r = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        cases = conn.execute(
+            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
+            (report_id,)
+        ).fetchall()
+    if not r:
+        raise HTTPException(404, "Report not found")
+
+    r, cases = dict(r), [dict(c) for c in cases]
+
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_RIGHT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                         Spacer, Table, TableStyle)
+
+        MONTHS = ["", "January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"]
+        NAVY   = colors.HexColor("#0f2137")
+        GOLD   = colors.HexColor("#f59e0b")
+        LIGHT  = colors.HexColor("#f8f9fc")
+        BORDER = colors.HexColor("#e2e8f0")
+
+        buf    = io.BytesIO()
+        doc    = SimpleDocTemplate(buf, pagesize=A4,
+                     leftMargin=1.8*cm, rightMargin=1.8*cm,
+                     topMargin=1.5*cm,  bottomMargin=1.5*cm)
+        styles = getSampleStyleSheet()
+        note_s = ParagraphStyle("Note", fontSize=8, fontName="Helvetica",
+                                textColor=colors.HexColor("#475569"))
+        h2_s   = ParagraphStyle("H2",   fontSize=11, fontName="Helvetica-Bold",
+                                textColor=NAVY, spaceBefore=12, spaceAfter=6)
+
+        enrolled = [c for c in cases if c.get("section") == "enrolled"]
+        closed   = [c for c in cases if c.get("section") != "enrolled"]
+        tot_enr  = sum(c.get("bonus_enrolled", 0) for c in cases)
+        tot_pri  = sum(c.get("bonus_priority",  0) for c in cases)
+        grand    = tot_enr + tot_pri
+
+        def make_section_table(case_list, show_priority=True):
+            hdr = ["#", "Student Name", "Contract ID", "Status", "Enrolled Bonus"]
+            if show_priority:
+                hdr.append("Priority")
+            hdr.append("Note")
+            rows = [hdr]
+            for i, c in enumerate(case_list, 1):
+                row = [
+                    str(i),
+                    Paragraph(c.get("student_name", ""), styles["Normal"]),
+                    c.get("contract_id", ""),
+                    Paragraph((c.get("app_status", "") or "")[:45], note_s),
+                    f"{c.get('bonus_enrolled', 0):,}" if c.get("bonus_enrolled") else "—",
+                ]
+                if show_priority:
+                    row.append(f"{c.get('bonus_priority', 0):,}" if c.get("bonus_priority") else "—")
+                row.append(Paragraph((c.get("note_enrolled", "") or "")[:80], note_s))
+                rows.append(row)
+            cw = [0.8*cm, 5*cm, 2.5*cm, 4*cm, 2.5*cm]
+            if show_priority:
+                cw.append(2*cm)
+            cw.append(3.5*cm)
+            t = Table(rows, colWidths=cw, repeatRows=1)
+            t.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0),  NAVY),
+                ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+                ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+                ("FONTSIZE",      (0, 0), (-1, -1), 8),
+                ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+                ("ALIGN",         (4, 0), (-2, -1), "RIGHT"),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, LIGHT]),
+                ("GRID",          (0, 0), (-1, -1), 0.3, BORDER),
+                ("TOPPADDING",    (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            return t
+
+        story = []
+
+        # ── Header ──
+        hdr_data = [[
+            Paragraph(
+                "<font color='#f59e0b'><b>STUDYLINK CAREER</b></font><br/>"
+                "<font size='16'><b>Performance Bonus Report</b></font><br/>"
+                "<font size='8' color='#94a3b8'>Báo cáo thưởng hiệu suất</font>",
+                ParagraphStyle("TL", fontName="Helvetica", textColor=colors.white, fontSize=10),
+            ),
+            Paragraph(
+                f"<font size='8' color='#94a3b8'>Period / Kỳ báo cáo</font><br/>"
+                f"<b><font size='14'>{MONTHS[r['month']]} {r['year']}</font></b>",
+                ParagraphStyle("TR", fontName="Helvetica", textColor=colors.white,
+                               fontSize=10, alignment=TA_RIGHT),
+            ),
+        ]]
+        hdr = Table(hdr_data, colWidths=[12*cm, 5*cm])
+        hdr.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), NAVY),
+            ("TOPPADDING",    (0, 0), (-1, -1), 14),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+            ("LEFTPADDING",   (0, 0), (0,  -1), 16),
+            ("RIGHTPADDING",  (-1,0), (-1, -1), 16),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(hdr)
+
+        # ── Info bar ──
+        info = Table([[
+            f"Staff: {r['staff_name']}",
+            f"Office: {r['office']}",
+            f"Target: {r.get('target', '—')}",
+            f"Enrolled: {r.get('enrolled', '—')}",
+            f"Tier: {r.get('tier', '—')}",
+        ]], colWidths=[4.2*cm] * 4 + [4.4*cm])
+        info.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), LIGHT),
+            ("FONTSIZE",      (0, 0), (-1, -1), 8),
+            ("FONTNAME",      (0, 0), (-1, -1), "Helvetica-Bold"),
+            ("TEXTCOLOR",     (0, 0), (-1, -1), NAVY),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING",   (0, 0), (0,  -1), 10),
+            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
+        ]))
+        story.append(info)
+        story.append(Spacer(1, 14))
+
+        # ── Enrolled section ──
+        if enrolled:
+            story.append(Paragraph("Closed Files — Enrolled / Hồ sơ đã nhập học", h2_s))
+            story.append(HRFlowable(width="100%", thickness=1.5, color=NAVY))
+            story.append(Spacer(1, 6))
+            story.append(make_section_table(enrolled, show_priority=True))
+            story.append(Spacer(1, 12))
+
+        # ── Other closed section ──
+        if closed:
+            story.append(Paragraph("Closed Files — Other / Hồ sơ đóng khác", h2_s))
+            story.append(HRFlowable(width="100%", thickness=1, color=BORDER))
+            story.append(Spacer(1, 6))
+            story.append(make_section_table(closed, show_priority=False))
+            story.append(Spacer(1, 16))
+
+        # ── Totals ──
+        tots = Table([
+            ["Bonus Enrolled / Bonus nhập học", f"{tot_enr:,} ₫"],
+            ["Priority Bonus / Bonus ưu tiên",  f"{tot_pri:,} ₫"],
+            ["TOTAL PAYABLE / TỔNG THỰC NHẬN",  f"{grand:,} ₫"],
+        ], colWidths=[10*cm, 6*cm], hAlign="RIGHT")
+        tots.setStyle(TableStyle([
+            ("FONTNAME",      (0, 0),  (-1, -1), "Helvetica"),
+            ("FONTNAME",      (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0),  (-1, -1), 9),
+            ("FONTSIZE",      (0, -1), (-1, -1), 11),
+            ("ALIGN",         (1, 0),  (1,  -1), "RIGHT"),
+            ("BACKGROUND",    (0, -1), (-1, -1), NAVY),
+            ("TEXTCOLOR",     (0, -1), (0,  -1), colors.white),
+            ("TEXTCOLOR",     (1, -1), (1,  -1), GOLD),
+            ("TOPPADDING",    (0, 0),  (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0),  (-1, -1), 6),
+            ("LEFTPADDING",   (0, 0),  (0,  -1), 10),
+            ("RIGHTPADDING",  (-1, 0), (-1, -1), 10),
+            ("LINEABOVE",     (0, -1), (-1, -1), 1.5, NAVY),
+            ("BOX",           (0, 0),  (-1, -1), 0.5, BORDER),
+            ("INNERGRID",     (0, 0),  (-1, -2), 0.3, BORDER),
+        ]))
+        story.append(tots)
+        story.append(Spacer(1, 20))
+
+        # ── Footer ──
+        footer = Table([[
+            Paragraph(f"Generated {datetime.now().strftime('%d %B %Y')}", note_s),
+            Paragraph(
+                f"Approved by {r.get('approved_by', '—')} · Document #{r['id']}",
+                ParagraphStyle("FR", fontName="Helvetica", fontSize=8,
+                               textColor=colors.HexColor("#94a3b8"), alignment=TA_RIGHT),
+            ),
+        ]], colWidths=[9*cm, 8*cm])
+        footer.setStyle(TableStyle([
+            ("LINEABOVE",  (0, 0), (-1, 0), 0.5, BORDER),
+            ("TOPPADDING", (0, 0), (-1,-1), 8),
+        ]))
+        story.append(footer)
+
+        doc.build(story)
+        buf.seek(0)
+
+        fname = (
+            f"BonusReport_{r['staff_name'].replace(' ', '_')}"
+            f"_{MONTHS[r['month']]}_{r['year']}.pdf"
+        )
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    except ImportError:
+        raise HTTPException(
+            500,
+            "PDF generation requires reportlab — run: pip install reportlab",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────
+# EMAIL (stub — wire up SendGrid / SES when ready)
+# ─────────────────────────────────────────────────────────────────
+@router.post("/{report_id}/email")
+def send_email(
+    report_id: str,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Stub endpoint — integrate SendGrid or AWS SES here.
+    body: { "recipient": "staff" | "payroll" }
+    """
+    recipient = body.get("recipient", "staff")
+    # TODO: implement email sending, e.g.:
+    # from sendgrid import SendGridAPIClient
+    # from sendgrid.helpers.mail import Mail
+    # sg = SendGridAPIClient(os.environ["SENDGRID_API_KEY"])
+    # sg.send(Mail(...))
+    print(f"[EMAIL STUB] report={report_id} recipient={recipient}")
+    return {"ok": True, "recipient": recipient, "status": "stub"}

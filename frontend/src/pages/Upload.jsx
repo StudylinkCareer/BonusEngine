@@ -1,157 +1,155 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { uploadCRM, uploadTemplate } from '../api/client.jsx'
+import { uploadReport } from '../api/client.js'
 
-const MONTHS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December'
-]
+const STAFF   = ['Đoàn Ngọc Trúc Quỳnh','Lê Thị Trường An','Nguyễn Thành Vinh','Nguyễn Thị Mỹ Ly','Phạm Thị Lợi','Phạm Thị Ngọc Thảo','Quan Hoàng Yến','Thái Thị Huỳnh Anh','Trần Thanh Gia Mẫn']
+const MONTHS  = ['January','February','March','April','May','June','July','August','September','October','November','December']
+const OFFICES = ['HCM','HN','DN']
+const YEARS   = [2024, 2025, 2026]
 
 export default function Upload() {
+  const [file, setFile]       = useState(null)
+  const [dragging, setDragging] = useState(false)
+  const [staff, setStaff]     = useState('')
+  const [month, setMonth]     = useState('')
+  const [year, setYear]       = useState(new Date().getFullYear())
+  const [office, setOffice]   = useState('HCM')
+  const [notes, setNotes]     = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [error, setError]     = useState('')
+  const inputRef = useRef()
   const navigate = useNavigate()
-  const [mode, setMode]     = useState('crm')       // 'crm' | 'template'
-  const [file, setFile]     = useState(null)
-  const [month, setMonth]   = useState(new Date().getMonth() + 1)
-  const [year, setYear]     = useState(new Date().getFullYear())
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError]   = useState(null)
 
-  const handleUpload = async () => {
-    if (!file) return
-    setLoading(true)
-    setError(null)
-    setResult(null)
-    try {
-      const fn = mode === 'crm' ? uploadCRM : uploadTemplate
-      const r  = await fn(file, month, year)
-      setResult(r.data)
-    } catch (e) {
-      const detail = e.response?.data?.detail
-      setError(typeof detail === 'object' ? JSON.stringify(detail, null, 2) : detail || e.message)
-    } finally {
-      setLoading(false)
-    }
+  const handleDrop = e => {
+    e.preventDefault(); setDragging(false)
+    const f = e.dataTransfer.files[0]
+    if (f?.name.match(/\.(xlsx|xls)$/i)) setFile(f)
+    else setError('Please upload an Excel file (.xlsx or .xls)')
   }
 
-  return (
-    <div style={{ maxWidth: '680px' }}>
-      <h2 style={{ color: '#1E4E79', marginBottom: '20px' }}>Upload Report</h2>
+  const handleSubmit = async () => {
+    if (!file || !staff || !month) { setError('Please complete all fields and select a file.'); return }
+    setError(''); setUploading(true)
+    try {
+      const monthNum = MONTHS.indexOf(month) + 1
+      const data = await uploadReport(file, staff, monthNum, year, office, notes)
+      navigate(`/review/${data.id}`)
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message || 'Upload failed. Please try again.')
+    } finally { setUploading(false) }
+  }
 
-      {/* Mode toggle */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <p style={{ fontSize: '13px', color: '#444', marginBottom: '12px' }}>
-          Select upload type:
-        </p>
-        <div style={{ display: 'flex', gap: '12px' }}>
+  const ready = file && staff && month && year && office
+
+  return (
+    <div className="fade-in" style={{ maxWidth:700 }}>
+      <h1 className="page-title">Upload CRM Report</h1>
+      <p className="page-subtitle">The engine will parse and classify all cases automatically.</p>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+        onClick={() => !file && inputRef.current.click()}
+        style={{
+          border:`2px dashed ${dragging ? 'var(--blue)' : file ? 'var(--approved)' : 'var(--border-2)'}`,
+          borderRadius:12, padding:'40px 32px', textAlign:'center',
+          background: dragging ? '#eff6ff' : file ? '#f0fdf4' : '#fafbfc',
+          cursor: file ? 'default' : 'pointer', transition:'all 0.2s', marginBottom:28,
+        }}>
+        <input ref={inputRef} type="file" accept=".xlsx,.xls" style={{ display:'none' }}
+          onChange={e => { const f = e.target.files[0]; if (f) { setFile(f); setError('') } }} />
+        {file ? (
+          <>
+            <div style={{ fontSize:36, marginBottom:8 }}>✓</div>
+            <div style={{ fontWeight:600, color:'var(--approved)', marginBottom:4 }}>{file.name}</div>
+            <div style={{ color:'var(--text-2)', fontSize:12, marginBottom:12 }}>{(file.size/1024).toFixed(1)} KB</div>
+            <button className="btn btn-ghost" style={{ fontSize:12 }}
+              onClick={e => { e.stopPropagation(); setFile(null) }}>Remove</button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize:36, marginBottom:12, opacity:0.3 }}>📂</div>
+            <div style={{ fontWeight:600, marginBottom:4 }}>{dragging ? 'Drop here' : 'Drag & drop CRM closed-file report'}</div>
+            <div style={{ color:'var(--text-2)', fontSize:12, marginBottom:14 }}>or click to browse — .xlsx or .xls only</div>
+            <button className="btn btn-ghost" style={{ fontSize:12 }}
+              onClick={e => { e.stopPropagation(); inputRef.current.click() }}>Browse files</button>
+          </>
+        )}
+      </div>
+
+      {/* Form */}
+      <div className="card" style={{ padding:24, marginBottom:20 }}>
+        <div style={{ fontWeight:600, marginBottom:18, fontSize:13 }}>Report Details</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+          <div style={{ gridColumn:'1/-1' }}>
+            <label>Staff Member *</label>
+            <select value={staff} onChange={e => setStaff(e.target.value)}>
+              <option value="">Select staff member…</option>
+              {STAFF.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Month *</label>
+            <select value={month} onChange={e => setMonth(e.target.value)}>
+              <option value="">Select month…</option>
+              {MONTHS.map(m => <option key={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Year *</label>
+            <select value={year} onChange={e => setYear(+e.target.value)}>
+              {YEARS.map(y => <option key={y}>{y}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Office *</label>
+            <select value={office} onChange={e => setOffice(e.target.value)}>
+              {OFFICES.map(o => <option key={o}>{o}</option>)}
+            </select>
+          </div>
+          <div style={{ gridColumn:'1/-1' }}>
+            <label>Notes (optional)</label>
+            <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="Special instructions…" style={{ resize:'vertical' }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="card" style={{ padding:16, marginBottom:20 }}>
+        <div style={{ fontSize:11, fontWeight:600, color:'var(--text-2)', marginBottom:10, letterSpacing:0.5 }}>
+          AFTER UPLOAD, THE INPUT REPORT WILL SHOW:
+        </div>
+        <div style={{ display:'flex', gap:12 }}>
           {[
-            { key: 'crm',      label: 'CRM Report (Báo cáo)',   desc: 'Raw closed-file report — cases need review before calculation' },
-            { key: 'template', label: 'Input Template (v7)',     desc: 'Pre-filled input template — validated and ready to calculate' },
-          ].map(opt => (
-            <div
-              key={opt.key}
-              onClick={() => setMode(opt.key)}
-              style={{
-                flex: 1, padding: '14px', borderRadius: '8px', cursor: 'pointer',
-                border: mode === opt.key ? '2px solid #2E75B6' : '0.5px solid #ddd',
-                background: mode === opt.key ? '#EFF6FB' : '#fff',
-              }}
-            >
-              <div style={{ fontWeight: '500', fontSize: '13px', marginBottom: '4px' }}>
-                {opt.label}
-              </div>
-              <div style={{ fontSize: '11px', color: '#666' }}>{opt.desc}</div>
+            ['crm-bg','crm-border','crm-text','🟢 CRM Data','Locked — from uploaded file'],
+            ['engine-bg','engine-border','engine-text','🔵 Engine','Auto-classified — editable with comment'],
+            ['input-bg','input-border','input-text','🟡 Required','Must complete before approval'],
+          ].map(([bg,bdr,col,lbl,desc]) => (
+            <div key={lbl} style={{ flex:1, padding:'10px 12px', borderRadius:8,
+              background:`var(--${bg})`, border:`1px solid var(--${bdr})` }}>
+              <div style={{ fontWeight:600, fontSize:12, color:`var(--${col})`, marginBottom:2 }}>{lbl}</div>
+              <div style={{ fontSize:11, color:'var(--text-2)' }}>{desc}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Period selection */}
-      <div className="card">
-        <div style={{ display: 'flex', gap: '16px', marginBottom: '20px', flexWrap: 'wrap' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', color: '#555', marginBottom: '5px' }}>Month</label>
-            <select value={month} onChange={e => setMonth(Number(e.target.value))}>
-              {MONTHS.map((m, i) => (
-                <option key={i+1} value={i+1}>{m}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', color: '#555', marginBottom: '5px' }}>Year</label>
-            <select value={year} onChange={e => setYear(Number(e.target.value))}>
-              {[2024, 2025, 2026].map(y => (
-                <option key={y}>{y}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* File picker */}
-        <div style={{
-          border: '1.5px dashed #BDD7EE', borderRadius: '8px',
-          padding: '28px', textAlign: 'center', marginBottom: '20px',
-          background: '#f8fbff',
-        }}>
-          <input
-            type="file"
-            accept=".xlsx,.xls"
-            onChange={e => setFile(e.target.files[0])}
-            style={{ display: 'none' }}
-            id="file-input"
-          />
-          <label htmlFor="file-input" style={{ cursor: 'pointer' }}>
-            <div style={{ color: '#2E75B6', fontWeight: '500', marginBottom: '6px' }}>
-              {file ? file.name : 'Choose Excel file'}
-            </div>
-            <div style={{ color: '#888', fontSize: '12px' }}>
-              {file ? `${(file.size / 1024).toFixed(1)} KB` : '.xlsx or .xls files only'}
-            </div>
-          </label>
-        </div>
-
-        <button
-          className="primary"
-          onClick={handleUpload}
-          disabled={!file || loading}
-          style={{ width: '100%', padding: '11px' }}
-        >
-          {loading ? 'Uploading...' : 'Upload'}
-        </button>
-      </div>
-
-      {/* Error */}
       {error && (
-        <div className="card" style={{ borderColor: '#f09595', background: '#FCEBEB' }}>
-          <p style={{ color: '#A32D2D', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{error}</p>
-        </div>
+        <div style={{ background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:8,
+          padding:'10px 14px', marginBottom:16, color:'#dc2626', fontSize:13 }}>{error}</div>
       )}
 
-      {/* Success */}
-      {result && (
-        <div className="card" style={{ borderColor: '#97C459', background: '#E2EFDA' }}>
-          <p style={{ color: '#276221', fontWeight: '500', marginBottom: '8px' }}>
-            ✓ {result.message}
-          </p>
-          <p style={{ fontSize: '12px', color: '#3B6D11' }}>
-            Staff: <strong>{result.staff_name}</strong> &nbsp;|&nbsp;
-            Cases: <strong>{result.case_count}</strong> &nbsp;|&nbsp;
-            Flagged: <strong>{result.flagged_count}</strong>
-          </p>
-          {result.warnings?.length > 0 && (
-            <ul style={{ fontSize: '12px', color: '#5a4a00', marginTop: '10px', paddingLeft: '18px' }}>
-              {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
-            </ul>
-          )}
-          <button
-            className="primary"
-            style={{ marginTop: '16px' }}
-            onClick={() => navigate(`/review/${result.run_id}`)}
-          >
-            Review cases →
-          </button>
-        </div>
-      )}
+      <div style={{ display:'flex', gap:10 }}>
+        <button className="btn btn-primary" onClick={handleSubmit}
+          disabled={!ready || uploading}
+          style={{ opacity:(!ready||uploading) ? 0.5 : 1, cursor:(!ready||uploading) ? 'not-allowed':'pointer', minWidth:160 }}>
+          {uploading ? 'Processing…' : '↑  Upload & Process'}
+        </button>
+        <button className="btn btn-ghost" onClick={() => navigate('/dashboard')}>Cancel</button>
+      </div>
     </div>
   )
 }

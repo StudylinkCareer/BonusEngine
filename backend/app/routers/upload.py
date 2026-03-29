@@ -12,7 +12,7 @@ from ..database import get_db
 from ..models import Run, Case, User
 from ..schemas import UploadResponse
 from ..routers.auth import get_current_user
-from ..engine.input import parse_crm_report, parse_input_file
+from ..engine.input import parse_crm_report
 from ..engine.config import load_config
 
 router = APIRouter()

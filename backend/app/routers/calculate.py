@@ -13,7 +13,11 @@ from ..models import Run, Case, Signoff, User
 from ..schemas import CalculationResult, CaseOut, SignoffCreate, SignoffOut
 from ..routers.auth import get_current_user
 from ..engine.config import load_config
-from ..engine.calc import CaseRecord, calculate_bonuses, ROW_TYPE_BASE
+
+from ..engine.calc import calculate_bonuses
+from ..engine.models import CaseRecord
+from ..engine.constants import ROW_BASE as ROW_TYPE_BASE
+
 from ..engine.constants import OFFICE_HCM, OFFICE_HN, OFFICE_DN, OFFICE_DEFAULT
 
 router = APIRouter()

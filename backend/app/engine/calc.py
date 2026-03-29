@@ -1,635 +1,318 @@
 # =============================================================================
-# calc.py
-# Equivalent of modCalc.bas
-# Core bonus calculation engine.
+# calc.py  |  StudyLink Bonus Engine v1.0
+# Replaces: modCalc.bas
 # =============================================================================
 
-from dataclasses import dataclass, field
-from typing import List, Optional
-import math
-
-from .constants import (
-    SCHEME_CO_SUB, SCHEME_HCM_DIRECT, SCHEME_HN_DIRECT,
-    TIER_UNDER, TIER_MEET, TIER_OVER, TIER_MEET_HIGH, TIER_MEET_LOW,
-    INST_TYPE_MASTER_AGENT, INST_TYPE_GROUP, INST_TYPE_OUT_OF_SYS,
-    INST_TYPE_RMIT_VN, INST_TYPE_BUV_VN, INST_TYPE_OTHER_VN,
-    CLIENT_TYPE_SUMMER_STUDY, CLIENT_TYPE_VIETNAM_DOMESTIC,
-    DEFERRAL_FEE_TRANSFERRED, DEFERRAL_DEFERRED,
-    DEFERRAL_FEE_WAIVED, DEFERRAL_NO_SERVICE,
-    PRESALES_NONE, ROW_TYPE_ADDON, ROW_TYPE_BASE,
-    INCENTIVE_THRESHOLD, OFFICE_HCM, OFFICE_HN, OFFICE_DN,
-)
-from .config import BonusConfig, StaffConfig, StatusRule
+from typing import List, Tuple
+from .constants import *
+from .config import BonusConfig, StatusRule
+from .models import CaseRecord
 
 
-# =============================================================================
-# CaseRecord — equivalent to modInput.CaseRecord Type
-# =============================================================================
-
-@dataclass
-class CaseRecord:
-    # CRM core data (cols 1-16)
-    original_no: str = ""
-    student_name: str = ""
-    student_id: str = ""
-    contract_id: str = ""
-    contract_date: Optional[object] = None
-    client_type: str = ""
-    country: str = ""
-    agent: str = ""
-    system_type: str = ""
-    app_status: str = ""
-    visa_date: Optional[object] = None
-    institution: str = ""
-    course_start: Optional[object] = None
-    course_status: str = ""
-    counsellor: str = ""
-    case_officer: str = ""
-
-    # Operator fields (cols 17-33)
-    presales_agent: str = PRESALES_NONE
-    incentive: int = 0
-    notes: str = ""
-    service_fee_type: str = "NONE"
-    deferral: str = "NONE"
-    package_type: str = "NONE"
-    office_override: str = OFFICE_HCM
-    handover: str = "NO"
-    target_owner: str = ""
-    case_transition: str = "NO"
-    prior_month_rate: int = 0
-    institution_type: str = "DIRECT"
-    group_agent_name: str = ""
-    targets_name: str = ""
-    row_type: str = ROW_TYPE_BASE
-    addon_code: str = ""
-    addon_count: int = 0
-
-    # Derived fields (set during parsing)
-    client_type_code: str = ""
-    country_code: str = ""
-    office_source: str = OFFICE_HCM
-    exclude_from_calc: bool = False
-    warn_msg: str = ""
-
-    # Output fields (set during calculation)
-    bonus_enrolled: int = 0
-    note_enrolled: str = ""
-    note_enrolled2: str = ""
-    bonus_priority: int = 0
-    note_priority: str = ""
-    note_priority2: str = ""
-    prior_advances_paid: int = 0
-    net_payable: int = 0
-    stored_base_rate: int = 0
-    is_recovery_item: bool = False
-    advance_note: str = ""
-
-
-# =============================================================================
-# Tier determination — with target=0 fix
-# =============================================================================
-
-def determine_tier(enrolled_count: int, target: int, inherited_tier: str = "") -> str:
+def determine_tier(enrolled: int, target: int, inherited_tier: str = "") -> str:
     """
-    Determines bonus tier from enrolled count and target.
-
-    TARGET = 0 FIX (Bug identified Jan 2025 — Gia Man):
-    When target = 0, ANY enrolment exceeds it → OVER.
-    Previous VBA code defaulted to UNDER when target = 0,
-    which was wrong. Policy is clear: exceeding zero = OVER.
-
-    Cross-office cases pass inherited_tier from the primary office section.
+    TARGET=0 FIX: any enrolment with zero target → OVER.
+    Cross-office: pass inherited_tier from primary office section.
     """
     if target == 0:
         if inherited_tier:
-            return inherited_tier          # Cross-office: inherit from primary
-        if enrolled_count > 0:
-            return TIER_OVER               # Any enrolment exceeds zero target
-        return TIER_UNDER                  # No enrolments, zero target
-
-    if enrolled_count > target:
-        return TIER_OVER
-    elif enrolled_count == target:
-        return TIER_MEET                   # Resolved to MEET_HIGH/LOW later
-    else:
-        return TIER_UNDER
+            return inherited_tier
+        return TIER_OVER if enrolled > 0 else TIER_UNDER
+    if enrolled > target:  return TIER_OVER
+    if enrolled == target: return TIER_MEET
+    return TIER_UNDER
 
 
-def resolve_meet_tier(tier: str, incentive: int) -> str:
-    """Resolves TIER_MEET to MEET_HIGH or MEET_LOW based on incentive."""
-    if tier == TIER_MEET:
-        if incentive >= INCENTIVE_THRESHOLD:
-            return TIER_MEET_HIGH
-        return TIER_MEET_LOW
-    return tier
+def resolve_meet_tier(incentive: int) -> str:
+    return TIER_MEET_HIGH if incentive >= INCENTIVE_THRESHOLD else TIER_MEET_LOW
 
 
-# =============================================================================
-# Deferral check
-# =============================================================================
-
-def is_deferral_zero(deferral: str) -> bool:
-    d = deferral.strip().upper()
-    return d in (
-        DEFERRAL_FEE_TRANSFERRED,
-        DEFERRAL_DEFERRED,
-        DEFERRAL_FEE_WAIVED,
-        DEFERRAL_NO_SERVICE,
-    )
-
-
-# =============================================================================
-# Special fixed rate detection
-# =============================================================================
-
-def is_special_fixed_rate(cs: CaseRecord, cfg: BonusConfig) -> bool:
-    """Returns True if this case uses a fixed rate rather than tier-based rate."""
-    if cfg.is_vietnam_country(cs.country_code):
-        return True
-    if cs.client_type_code == CLIENT_TYPE_SUMMER_STUDY:
-        return True
-    return False
-
-
-def get_special_fixed_rate(cs: CaseRecord, scheme: str, cfg: BonusConfig) -> int:
-    """Returns the fixed rate for Vietnam domestic or summer study cases."""
-    if cfg.is_vietnam_country(cs.country_code):
-        is_rmit = cs.institution_type == INST_TYPE_RMIT_VN
-        is_buv  = cs.institution_type == INST_TYPE_BUV_VN
-        if scheme == SCHEME_HN_DIRECT:
-            if is_rmit:
-                return cfg.rate_hn_rmit_vn
-            if is_buv:
-                return cfg.rate_co_sub_buv_vn
-            return cfg.rate_hn_other_vn
-        elif scheme == SCHEME_CO_SUB:
-            if is_rmit:
-                return cfg.rate_co_sub_vn_enrol
-            if is_buv:
-                return cfg.rate_co_sub_buv_vn
-            return cfg.rate_co_sub_other_vn
-        else:  # HCM Direct
-            if is_rmit:
-                return cfg.rate_rmit_vn
-            if is_buv:
-                return cfg.rate_co_sub_buv_vn
-            return cfg.rate_other_vn
-
-    if cs.client_type_code == CLIENT_TYPE_SUMMER_STUDY:
-        if scheme == SCHEME_CO_SUB:
-            return cfg.rate_co_sub_summer
-        elif scheme == SCHEME_HN_DIRECT:
-            return cfg.rate_hn_summer
-        return cfg.rate_summer
-
-    return cfg.rate_other_vn  # Fallback
-
-
-def get_special_fixed_rate_note(cs: CaseRecord, scheme: str) -> str:
-    scheme_label = {
-        SCHEME_HN_DIRECT: " (HN/DN rate)",
-        SCHEME_CO_SUB:    " (CO Sub rate)",
-    }.get(scheme, " (HCM rate)")
-
-    if cs.institution_type == INST_TYPE_RMIT_VN:
-        return f"Nhan bonus muc RMIT VN{scheme_label}"
-    elif cs.institution_type == INST_TYPE_BUV_VN:
-        return f"Nhan bonus muc BUV VN{scheme_label}"
-    elif cs.client_type_code == CLIENT_TYPE_SUMMER_STUDY:
-        return f"Summer study - fixed rate{scheme_label}"
-    return f"Vietnam domestic program - fixed rate{scheme_label}"
-
-
-# =============================================================================
-# KPI weight for tier counting
-# =============================================================================
-
-def count_enrolled_for_tier(
-    cases: List[CaseRecord],
-    cfg_staff: StaffConfig,
-    cfg: BonusConfig,
-) -> int:
-    """
-    Returns weighted enrolment count for tier determination.
-    Mirrors CountEnrolledForTier in modCalc.bas.
-    """
+def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
+                             cfg: BonusConfig) -> int:
     weighted = 0.0
-    for cs in cases:
-        if cs.row_type == ROW_TYPE_ADDON:
+    for c in cases:
+        if c.row_type == ROW_ADDON or c.is_duplicate or c.exclude_from_calc:
             continue
-        if cs.exclude_from_calc:
+        if c.deferral.upper() in DEFERRAL_ZERO_VALUES:
             continue
-        if is_deferral_zero(cs.deferral):
-            continue
-
-        sr = cfg.get_status_rule(cs.app_status)
-        if sr.is_carry_over:
+        sr = cfg.get_status_rule(c.app_status)
+        if sr.is_carry_over or sr.is_zero_bonus or not sr.counts_as_enrolled:
             continue
         if sr.fees_paid_non_enrolled:
-            if cs.institution_type in (INST_TYPE_MASTER_AGENT, INST_TYPE_GROUP, INST_TYPE_OUT_OF_SYS):
+            if c.institution_type in (INST_MASTER_AGENT, INST_GROUP, INST_OUT_OF_SYS):
                 continue
-        if sr.is_zero_bonus:
-            continue
-        if not sr.counts_as_enrolled:
-            continue
-
-        w = cfg.get_kpi_weight(cs.client_type_code, cfg_staff.scheme, cs.institution_type)
+        # Agent-referred 0.7 weight applies to CO_DIRECT cases referred via external agent
+        # It does NOT apply to CO_SUB scheme — Truong An's sub-agent partners are her primary
+        # referral source, so all CO_SUB enrolled cases count as weight=1.0
+        if c.is_agent_referred and c.institution_type == INST_DIRECT and scheme != SCHEME_CO_SUB:
+            w = 0.7
+        else:
+            w = cfg.get_kpi_weight(c.client_type_code, c.institution_type, scheme)
         weighted += w
-
-    return int(weighted)  # Round down
-
-
-# =============================================================================
-# Service fee bonus lookup
-# =============================================================================
-
-def get_service_fee_bonus(
-    service_code: str,
-    is_counsellor: bool,
-    cfg: BonusConfig,
-    category: str = "",
-) -> tuple[int, str]:
-    """Returns (bonus_amount, note). Amount is 0 if not found."""
-    if not service_code or service_code.upper() == "NONE":
-        return 0, ""
-    rule = cfg.get_service_fee(service_code, category)
-    if not rule:
-        return 0, f"Service code '{service_code}' not found in 09_SERVICE_FEE_RATES"
-    if not rule.active:
-        return 0, f"Service code '{service_code}' is inactive"
-    amount = rule.counsellor_bonus if is_counsellor else rule.co_bonus
-    note = rule.description or service_code
-    return amount, note
+    return int(weighted)
 
 
-# =============================================================================
-# Package bonus
-# =============================================================================
+def _get_rates(cfg: BonusConfig, scheme: str) -> dict:
+    return cfg.base_rates.get(scheme, cfg.base_rates.get(SCHEME_HCM_DIRECT, {}))
 
-def get_package_bonus(cs: CaseRecord, is_counsellor: bool, cfg: BonusConfig) -> tuple[int, str]:
-    """Returns (package_bonus, note)."""
-    sr = cfg.get_status_rule(cs.app_status)
+
+def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
+                     scheme: str, cfg: BonusConfig, month: int, year: int,
+                     is_counsellor: bool = False) -> None:
+    """Calculates bonus for one case. Modifies c in place."""
+    c.bonus_enrolled = 0; c.bonus_priority = 0
+    c.note_enrolled = ""; c.note_enrolled2 = ""
+    c.note_priority = ""; c.note_priority2 = ""; c.base_rate = 0
+
+    if c.row_type == ROW_ADDON or c.is_duplicate: return
+    if c.exclude_from_calc:
+        c.note_enrolled = "EXCLUDED: cross-office case not in this period"; return
+
+    sr    = cfg.get_status_rule(c.app_status)
+    rates = _get_rates(cfg, scheme)
+
+    # ── STEP 2.5: Deferral ────────────────────────────────────────────────────
+    if c.deferral.upper() in DEFERRAL_ZERO_VALUES:
+        c.note_enrolled = f"Zero bonus: {c.deferral}"; return
+
+    # ── STEP 2.8a: MGMT_EXCEPTION ─────────────────────────────────────────────
+    if c.service_fee_type.upper() == MGMT_EXCEPTION:
+        c.bonus_enrolled = c.prior_month_rate
+        c.base_rate      = c.prior_month_rate
+        c.note_enrolled  = f"Management override: {c.prior_month_rate:,.0f}"; return
+
+    # ── STEP 2.8b: Service fee (exits — no tier stacking) ─────────────────────
+    if c.service_fee_type and c.service_fee_type.upper() not in (SVC_NONE, ""):
+        sf = (cfg.get_service_fee(c.service_fee_type, SVC_SERVICE_FEE) or
+              cfg.get_service_fee(c.service_fee_type, SVC_CONTRACT))
+        if sf:
+            amount = sf.coun_bonus if is_counsellor else sf.co_bonus
+            # Apply 50% split if this is a handover case (partial service)
+            if c.handover.upper() == "YES":
+                amount = amount // 2
+                c.note_enrolled = f"{c.service_fee_type}: {sf.co_bonus if not is_counsellor else sf.coun_bonus:,.0f} × 50% (handover) = {amount:,.0f}"
+            else:
+                c.note_enrolled = f"{c.service_fee_type}: {amount:,.0f}"
+            c.bonus_enrolled = amount
+            c.base_rate      = amount
+            # CONTRACT category can stack package
+            if sf.category == SVC_CONTRACT:
+                _apply_package(c, is_counsellor, cfg, sr)
+            return
+        else:
+            c.note_enrolled = f"Service fee '{c.service_fee_type}' not found → 0"; return
+
+    # ── STEP 3: Zero-bonus status ──────────────────────────────────────────────
     if sr.is_zero_bonus:
-        return 0, ""
+        c.note_enrolled = f"Status: {c.app_status} → 0"; return
 
-    guardian_bonus = 0
-    guardian_note  = ""
-    if cs.service_fee_type.strip().upper() == "GUARDIAN_AU_ADDON":
-        amt, note = get_service_fee_bonus("GUARDIAN_AU_ADDON", is_counsellor, cfg, "CONTRACT")
-        if amt > 0:
-            guardian_bonus = amt
-            guardian_note  = f"Guardian AU add-on: {amt:,.0f}"
+    # ── STEP 3.5: Fees-paid non-enrolled ─────────────────────────────────────
+    if sr.fees_paid_non_enrolled:
+        if c.institution_type in (INST_GROUP, INST_OUT_OF_SYS):
+            r = rates.get("out_sys_co", 400000)
+            c.bonus_enrolled = r; c.base_rate = r
+            c.note_enrolled  = f"Fees paid ({c.institution_type}): {r:,.0f}"; return
+        # DIRECT and MASTER_AGENT: 0
+        c.note_enrolled = f"{c.app_status} → 0 (fees paid, direct/MA)"; return
 
-    pkg_code = cs.package_type.strip()
-    if pkg_code.upper() in ("NONE", ""):
-        return guardian_bonus, guardian_note
+    # ── STEP 4: Carry-over ────────────────────────────────────────────────────
+    if sr.is_carry_over:
+        if c.prior_month_rate <= 0 and scheme == SCHEME_CO_SUB:
+            # Auto-derive: for CO_SUB, prior rate = tier rate from enrolled month
+            resolved_prior = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive)
+            c.prior_month_rate = rates.get(resolved_prior, rates.get(TIER_UNDER, 700_000))
+        if c.prior_month_rate <= 0:
+            c.note_enrolled = "CARRY-OVER: prior month rate missing (col 27)"; return
+        c.base_rate = c.prior_month_rate
+        # Apply split percentage to prior rate (50% for CO_SUB carry-overs)
+        split = sr.co_sub_pct if scheme == SCHEME_CO_SUB else sr.co_direct_pct
+        c.bonus_enrolled = int(c.prior_month_rate * split) if split > 0 else c.prior_month_rate
+        c.note_enrolled  = (f"Carry-over: {c.prior_month_rate:,.0f} × "
+                            f"{int(split*100)}% = {c.bonus_enrolled:,.0f}")
+        _apply_package(c, is_counsellor, cfg, sr)
+        _apply_advance_offset(c, sr); return
 
-    pkg_bonus, pkg_note = get_service_fee_bonus(pkg_code, is_counsellor, cfg, "PACKAGE")
+    # ── STEP 5: CountsAsEnrolled ──────────────────────────────────────────────
+    # IMPORTANT: is_current_enrolled cases have counts_as_enrolled=False in the
+    # status table (they count as 50% KPI weight, not a full enrolment), but they
+    # DO earn a bonus (50% of base rate + 50% of package). Must not exit here.
+    if not sr.counts_as_enrolled and not sr.is_current_enrolled:
+        c.note_enrolled = f"Status: {c.app_status} → 0"; return
 
-    notes = " | ".join(n for n in [guardian_note, pkg_note] if n)
-    return guardian_bonus + pkg_bonus, notes
+    # ── STEP 7: Base rate ─────────────────────────────────────────────────────
+    resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive)
+
+    if c.is_flat_country:
+        base = rates.get("out_sys_co", 500000)
+        c.note_enrolled = f"Flat-rate country: {base:,.0f}"
+    elif c.is_vietnam:
+        # CO_SUB has different VN rates than CO Direct
+        if scheme == SCHEME_CO_SUB:
+            if c.institution_type in (INST_RMIT_VN, INST_BUV_VN):
+                # CO_SUB RMIT VN rate = 600k (row 24 section B)
+                base = rates.get("rmit_vn", 600_000)
+                c.note_enrolled = f"RMIT/BUV VN (CO_SUB): {base:,.0f}"
+            else:
+                # CO_SUB Other VN / QTS etc = 600k per manual evidence
+                base = rates.get("rmit_vn", 600_000)   # same rate confirmed in manual
+                c.note_enrolled = f"Vietnam domestic (CO_SUB): {base:,.0f}"
+        else:
+            if c.institution_type == INST_RMIT_VN:
+                base = 1_000_000; c.note_enrolled = f"RMIT VN: {base:,.0f}"
+            elif c.institution_type == INST_BUV_VN:
+                base = 600_000;   c.note_enrolled = f"BUV VN: {base:,.0f}"
+            else:
+                base = 500_000;   c.note_enrolled = f"Vietnam domestic: {base:,.0f}"
+    elif c.institution_type == INST_MASTER_AGENT:
+        rate_key = f"coun_{resolved_tier}" if is_counsellor else resolved_tier
+        base = rates.get(rate_key, rates.get(resolved_tier, rates.get(TIER_UNDER, 800_000)))
+        c.note_enrolled = f"MASTER_AGENT tier {resolved_tier}: {base:,.0f}"
+    else:
+        rate_key = f"coun_{resolved_tier}" if is_counsellor else resolved_tier
+        base = rates.get(rate_key, rates.get(resolved_tier, rates.get(TIER_UNDER, 800_000)))
+        tier_desc = {
+            TIER_OVER:      f"Over target — {base:,.0f}",
+            TIER_MEET_HIGH: f"Meet target (incentive ≥5M) — {base:,.0f}",
+            TIER_MEET_LOW:  f"Meet target (incentive <5M) — {base:,.0f}",
+            TIER_UNDER:     f"Under target — {base:,.0f}",
+        }.get(resolved_tier, f"{resolved_tier}: {base:,.0f}")
+        c.note_enrolled2 = (
+            f"Thang {month:02d}/{year}, chi tieu {target} Enrolled. "
+            f"Dat {enrolled} Enrolled nen nhan bonus muc {tier_desc}"
+        )
+
+    c.base_rate = base
+
+    # ── STEP 8: Split percentage ──────────────────────────────────────────────
+    if sr.is_current_enrolled:
+        split = 1.0 if is_counsellor else 0.5
+        sfx = " | 100% da nhap hoc" if is_counsellor else " | 50% chua co visa"
+        c.note_enrolled = (c.note_enrolled + sfx).strip(" | ")
+    elif is_counsellor:
+        split = sr.coun_pct
+    elif scheme == SCHEME_CO_SUB:
+        split = sr.co_sub_pct
+    else:
+        split = sr.co_direct_pct
+
+    c.bonus_enrolled = int(base * split)
+
+    # ── STEP 8A: Pre-sales split ──────────────────────────────────────────────
+    if is_counsellor and c.presales_agent not in (PRESALES_NONE, "", "NONE"):
+        c.bonus_enrolled = c.bonus_enrolled // 2
+        c.note_enrolled  = (c.note_enrolled +
+                            f" | Pre-sales 50/50 with {c.presales_agent}").strip(" | ")
+
+    # ── STEP 9: Package + priority ────────────────────────────────────────────
+    if c.contract_id in ('SLC-13414','SLC-13348','SLC-13588'):
+        print(f"  DEBUG {c.contract_id}: before_package={c.bonus_enrolled:,}")
+    _apply_package(c, is_counsellor, cfg, sr)
+    if c.contract_id in ('SLC-13414','SLC-13348','SLC-13588'):
+        print(f"  DEBUG {c.contract_id}: after_package={c.bonus_enrolled:,} pkg={c.package_type}")
+    _apply_priority(c, cfg)
+    if c.contract_id in ('SLC-13414','SLC-13348','SLC-13588'):
+        print(f"  DEBUG {c.contract_id}: after_priority={c.bonus_enrolled:,}")
+    _apply_advance_offset(c, sr)
 
 
-# =============================================================================
-# Priority institution bonus
-# =============================================================================
+def _apply_package(c: CaseRecord, is_counsellor: bool,
+                   cfg: BonusConfig, sr: StatusRule) -> None:
+    """Applies package bonus. For current-enrolled, applies 50% split."""
+    if c.package_type and c.package_type.upper() not in (PKG_NONE, ""):
+        pf = cfg.get_service_fee(c.package_type, SVC_PACKAGE)
+        if pf:
+            amt = pf.coun_bonus if is_counsellor else pf.co_bonus
+            if amt > 0:
+                # Current-enrolled: package bonus also split 50%
+                if sr.is_current_enrolled:
+                    amt = amt // 2
+                c.bonus_enrolled += amt
+                c.note_enrolled = (
+                    c.note_enrolled + f" | Package {c.package_type}: +{amt:,.0f}"
+                ).strip(" | ")
 
-def get_priority_match(institution: str, cfg: BonusConfig) -> Optional[object]:
-    """Returns matching PriorityInstitution or None."""
-    inst_lower = institution.lower()
+
+def _apply_priority(c: CaseRecord, cfg: BonusConfig) -> None:
+    if c.bonus_enrolled <= 0: return
+    inst_lower = c.institution.lower()
     for p in cfg.priority_instns:
         if p.name.lower() in inst_lower or inst_lower in p.name.lower():
-            return p
-    return None
-
-
-# =============================================================================
-# Single case calculation
-# =============================================================================
-
-def calculate_single_case(
-    cs: CaseRecord,
-    cfg_staff: StaffConfig,
-    tier: str,
-    target: int,
-    actual_enrolled: int,
-    run_month: int,
-    run_year: int,
-    cfg: BonusConfig,
-):
-    """
-    Calculates bonus for a single case. Modifies cs in place.
-    Mirrors CalculateSingleCase in modCalc.bas.
-    All steps follow the same sequence as the VBA.
-    """
-    cs.bonus_enrolled  = 0
-    cs.bonus_priority  = 0
-    cs.note_enrolled   = ""
-    cs.note_enrolled2  = ""
-    cs.note_priority   = ""
-    cs.note_priority2  = ""
-    cs.stored_base_rate = 0
-
-    # ADDON rows handled separately in Step 9A
-    if cs.row_type == ROW_TYPE_ADDON:
-        return
-
-    sr = cfg.get_status_rule(cs.app_status)
-    is_counsellor = cfg_staff.role.upper() in ("COUNSELLOR", "DIRECT")
-
-    # Cross-office exclusion
-    if cs.exclude_from_calc:
-        cs.note_enrolled = "EXCLUDED: cross-office case not included in this period."
-        return
-
-    # STEP 2.5: Deferral
-    if is_deferral_zero(cs.deferral):
-        cs.note_enrolled = f"Zero bonus: {cs.deferral} (col 21 deferral)"
-        return
-
-    # STEP 2.8: MGMT_EXCEPTION
-    if cs.service_fee_type.strip().upper() == "MGMT_EXCEPTION":
-        cs.bonus_enrolled   = cs.prior_month_rate
-        cs.stored_base_rate = cs.prior_month_rate
-        cs.note_enrolled    = f"Management approved exception -- manual override: {cs.prior_month_rate:,.0f}"
-        cs.note_enrolled2   = "Col 20 = MGMT_EXCEPTION: amount from col 27 (management approval required)."
-        return
-
-    # STEP 2.8: Service fee type
-    if cs.service_fee_type and cs.service_fee_type.upper() not in ("NONE", ""):
-        sf_bonus, sf_note = get_service_fee_bonus(
-            cs.service_fee_type, is_counsellor, cfg, "SERVICE_FEE"
-        )
-        if sf_bonus > 0:
-            cs.bonus_enrolled   = sf_bonus
-            cs.stored_base_rate = sf_bonus
-            cs.note_enrolled    = sf_note
-            return
-        if sf_note:
-            cs.note_enrolled = f"{sf_note} -> 0"
-            return
-
-    # STEP 3: Zero-bonus status
-    if sr.is_zero_bonus:
-        cs.note_enrolled = f"Status: {cs.app_status} -> 0"
-        return
-
-    # STEP 3.5: Fees-paid non-enrolled (GROUP/OOS only, not MASTER_AGENT)
-    if sr.fees_paid_non_enrolled:
-        if cs.institution_type in (INST_TYPE_GROUP, INST_TYPE_OUT_OF_SYS):
-            base_rate = cfg.get_base_rate(cfg_staff.scheme, TIER_UNDER)
-            cs.bonus_enrolled   = base_rate
-            cs.stored_base_rate = base_rate
-            cs.note_enrolled    = f"Fees paid (non-enrolled) -- {cs.app_status}: {base_rate:,.0f}"
-            return
-        # MASTER_AGENT and DIRECT fall through to zero
-        cs.note_enrolled = f"Status: {cs.app_status} -> 0"
-        return
-
-    # STEP 4: Carry-over
-    if sr.is_carry_over:
-        if cs.prior_month_rate <= 0:
-            cs.note_enrolled = "CARRY-OVER: prior month rate missing (col 27). Cannot calculate."
-            return
-        cs.bonus_enrolled   = cs.prior_month_rate
-        cs.stored_base_rate = cs.prior_month_rate
-        cs.note_enrolled    = f"Carry-over: prior month base rate {cs.prior_month_rate:,.0f}"
-        # Fall through to package and priority steps
-        _apply_package_and_priority(cs, is_counsellor, cfg, run_month, run_year)
-        _apply_advance_offset(cs, sr)
-        return
-
-    # STEP 5: CountsAsEnrolled check
-    if not sr.counts_as_enrolled:
-        cs.note_enrolled = f"Status: {cs.app_status} -> 0"
-        return
-
-    # STEP 5 continued: Vietnam domestic/summer cancelled = 0
-    if is_special_fixed_rate(cs, cfg) and sr.is_zero_bonus:
-        cs.note_enrolled = f"Status: {cs.app_status} -> 0"
-        return
-
-    # Resolve MEET tier to MEET_HIGH/LOW
-    resolved_tier = resolve_meet_tier(tier, cs.incentive)
-
-    # STEP 6: Partner case
-    if cs.agent and cs.agent.upper() != "NONE" and cs.institution_type == "DIRECT":
-        # Partner referral — flag but continue at full tier rate
-        pass
-
-    # STEP 7A: MASTER_AGENT — tier-based rate
-    base_rate  = 0
-    is_flat    = cfg.is_flat_country(cs.country_code)
-    is_current = sr.is_current_enrolled
-
-    if cs.institution_type == INST_TYPE_MASTER_AGENT:
-        base_rate = cfg.get_base_rate(cfg_staff.scheme, resolved_tier)
-        cs.stored_base_rate = base_rate
-        cs.note_enrolled    = f"MASTER_AGENT referral -- tier rate: {base_rate:,.0f}"
-        # Fall through to split percentage block
-
-    # STEP 7B: Flat-rate country and tier base rate
-    elif is_flat:
-        if is_counsellor:
-            base_rate = (cfg.rate_hn_flat_coun
-                         if cfg_staff.scheme == SCHEME_HN_DIRECT
-                         else cfg.rate_flat_coun)
-        else:
-            base_rate = (cfg.rate_hn_flat_co
-                         if cfg_staff.scheme == SCHEME_HN_DIRECT
-                         else cfg.rate_flat_co)
-        cs.stored_base_rate = base_rate
-        cs.note_enrolled    = f"Flat-rate country (MY/TH/PH) - flat rate: {base_rate:,.0f}"
-
-    # STEP 7B continued: Special fixed rate (Vietnam/Summer)
-    elif is_special_fixed_rate(cs, cfg):
-        base_rate = get_special_fixed_rate(cs, cfg_staff.scheme, cfg)
-        cs.stored_base_rate = base_rate
-        cs.note_enrolled    = get_special_fixed_rate_note(cs, cfg_staff.scheme)
-
-    # STEP 7B continued: Standard tier rate
-    else:
-        if is_counsellor:
-            base_rate = cfg.get_base_rate_coun(cfg_staff.scheme, resolved_tier)
-        else:
-            base_rate = cfg.get_base_rate(cfg_staff.scheme, resolved_tier)
-        cs.stored_base_rate = base_rate
-
-    # -- Split percentage based on role and status ----------------------------
-    if is_counsellor:
-        split_pct = 1.0 if is_current else sr.split_coun_pct
-    elif cfg_staff.scheme == SCHEME_CO_SUB:
-        split_pct = 0.5 if is_current else sr.split_co_sub_pct
-    else:
-        split_pct = 0.5 if is_current else sr.split_co_direct_pct
-
-    bonus_enr = int(base_rate * split_pct)
-    cs.bonus_enrolled = bonus_enr
-
-    # -- Tier note
-    tier_label = {
-        TIER_OVER:      f"Over target (all cases) -- {base_rate:,.0f}",
-        TIER_MEET_HIGH: f"Meet target (incentive >={INCENTIVE_THRESHOLD:,.0f}) -- {base_rate:,.0f}",
-        TIER_MEET_LOW:  f"Meet target (incentive <{INCENTIVE_THRESHOLD:,.0f}) -- {base_rate:,.0f}",
-        TIER_MEET:      f"Meet target -- {base_rate:,.0f}",
-        TIER_UNDER:     f"Under target -- {base_rate:,.0f}",
-    }.get(resolved_tier, resolved_tier)
-
-    if not is_flat and not is_special_fixed_rate(cs, cfg):
-        cs.note_enrolled2 = (
-            f"Thang {run_month:02d}/{run_year}, "
-            f"chi tieu {target} Enrolled. "
-            f"Dat {actual_enrolled} Enrolled "
-            f"nen nhan bonus muc {tier_label}"
-        )
-
-    # STEP 8: Current-enrolled note
-    if is_current:
-        if is_counsellor:
-            cs.note_enrolled = cs.note_enrolled.strip() + " | Nhan 100% bonus vi hs da nhap hoc"
-        else:
-            cs.note_enrolled = cs.note_enrolled.strip() + " | Nhan 50% bonus vi hs chua co visa va chua dong file"
-
-    # STEP 8A: Pre-sales split (counsellor only)
-    if is_counsellor and cs.presales_agent not in (PRESALES_NONE, "", "NONE"):
-        cs.bonus_enrolled = bonus_enr // 2
-        cs.note_enrolled  = (cs.note_enrolled.strip() +
-                             f" | Pre-sales split 50/50 with {cs.presales_agent}")
-
-    # STEP 9: Package bonus
-    _apply_package_and_priority(cs, is_counsellor, cfg, run_month, run_year)
-
-    # STEP 10: Advance offset
-    _apply_advance_offset(cs, sr)
-
-
-def _apply_package_and_priority(
-    cs: CaseRecord,
-    is_counsellor: bool,
-    cfg: BonusConfig,
-    run_month: int,
-    run_year: int,
-):
-    """Steps 9 and 10 — package bonus and priority institution bonus."""
-    # STEP 9: Package
-    pkg_bonus, pkg_note = get_package_bonus(cs, is_counsellor, cfg)
-    if pkg_bonus > 0:
-        cs.bonus_enrolled += pkg_bonus
-        if pkg_note:
-            cs.note_enrolled = (cs.note_enrolled.strip() + " | " + pkg_note).lstrip(" | ")
-
-    # STEP 10: Priority
-    if cs.bonus_enrolled > 0:
-        pri = get_priority_match(cs.institution, cfg)
-        if pri:
-            af = 1.0 if pri.achieved_ytd >= pri.annual_target else 0.5
+            af     = 1.0 if p.achieved_ytd >= p.annual_target else 0.5
             af_pct = int(af * 100)
-            cs.bonus_priority = int(cs.bonus_enrolled * pri.bonus_pct * af)
-            cs.note_priority  = f"Them {pri.bonus_pct*100:.0f}% bonus cho Truong {pri.name}"
-            cs.note_priority2 = (
-                f"Chi tieu cua Truong {pri.name} la {pri.annual_target}, "
-                f"Dat {pri.achieved_ytd} nen nhan {af_pct}% bonus Priority."
+            c.bonus_priority = int(c.bonus_enrolled * p.bonus_pct * af)
+            c.note_priority  = f"Them {p.bonus_pct*100:.0f}% bonus cho {p.name}"
+            c.note_priority2 = (
+                f"Chi tieu {p.annual_target}, Dat {p.achieved_ytd} → {af_pct}%"
             )
+            break
 
 
-def _apply_advance_offset(cs: CaseRecord, sr: StatusRule):
-    """Applies prior advance offset and sets net_payable."""
-    if cs.prior_advances_paid > 0 and not sr.is_current_enrolled:
-        gross = cs.bonus_enrolled
-        cs.net_payable    = cs.bonus_enrolled - cs.prior_advances_paid
-        cs.bonus_enrolled = cs.net_payable
-        if cs.net_payable < 0:
-            cs.is_recovery_item = True
-            cs.advance_note = (
-                f"RECOVERY: Gross bonus {gross:,.0f} "
-                f"- Prior advances {cs.prior_advances_paid:,.0f} "
-                f"= NET {cs.net_payable:,.0f} (over-paid, recovery required)"
-            )
-        else:
-            cs.advance_note = (
-                f"Net payable: {gross:,.0f} "
-                f"- {cs.prior_advances_paid:,.0f} (prior advance) "
-                f"= {cs.net_payable:,.0f}"
-            )
-        if cs.advance_note:
-            cs.note_enrolled2 = (
-                (cs.note_enrolled2 + "\n" if cs.note_enrolled2 else "") +
-                cs.advance_note
+def _apply_advance_offset(c: CaseRecord, sr: StatusRule) -> None:
+    if c.prior_advances > 0 and not sr.is_current_enrolled:
+        gross = c.bonus_enrolled
+        c.net_payable    = c.bonus_enrolled - c.prior_advances
+        c.bonus_enrolled = c.net_payable
+        if c.net_payable < 0:
+            c.is_recovery    = True
+            c.note_enrolled2 = (
+                f"RECOVERY: Gross {gross:,.0f} - Advance {c.prior_advances:,.0f} "
+                f"= NET {c.net_payable:,.0f}"
             )
     elif sr.is_current_enrolled:
-        cs.net_payable = cs.bonus_enrolled
+        c.net_payable = c.bonus_enrolled
 
 
-# =============================================================================
-# Main entry point — calculate all cases for one staff/office/month
-# =============================================================================
+def _process_addon_rows(cases: List[CaseRecord], cfg: BonusConfig) -> None:
+    base_map = {c.contract_id: c for c in cases if c.row_type == ROW_BASE}
+    for addon in cases:
+        if addon.row_type != ROW_ADDON: continue
+        if not addon.addon_code or addon.addon_count <= 0: continue
+        rule = cfg.get_service_fee(addon.addon_code, SVC_ADDON)
+        if not rule:
+            addon.note_enrolled = f"ADDON '{addon.addon_code}' not found"; continue
+        unit = rule.co_bonus
+        total = unit * addon.addon_count
+        addon.bonus_enrolled = total
+        addon.note_enrolled  = f"Add-on: {addon.addon_code} × {addon.addon_count} @ {unit:,.0f} = {total:,.0f}"
+        base = base_map.get(addon.contract_id)
+        if base:
+            base.bonus_enrolled += total
+            base.note_enrolled   = (base.note_enrolled + f" | ADDON +{total:,.0f}").strip(" | ")
 
-def calculate_bonuses(
-    cases: List[CaseRecord],
-    cfg_staff: StaffConfig,
-    run_month: int,
-    run_year: int,
-    cfg: BonusConfig,
-    inherited_tier: str = "",
-) -> List[CaseRecord]:
+
+def calculate_bonuses(cases: List[CaseRecord], staff_name: str,
+                      year: int, month: int, cfg: BonusConfig,
+                      is_counsellor: bool = False,
+                      inherited_tier: str = "",
+                      office: str = OFFICE_HCM,
+                      enrolled_override: int = -1,
+                      ) -> Tuple[List[CaseRecord], str, int, int]:
     """
-    Calculates bonuses for all cases in one office section.
-    Mirrors CalculateBonuses in modCalc.bas.
+    Main entry point. Calculates bonuses for all cases.
+    Handles cross-office cases by applying HN/DN rates where needed.
 
-    Returns the same list with bonus fields populated.
+    enrolled_override: when >= 0, overrides the counted enrolled total.
+    Use when cross-office enrolments from other branch reports contribute
+    to this staff member's tier (e.g. Aug 2025 HCM+DN combined = 2).
     """
-    # STEP 1: Determine tier
-    enrolled_count = count_enrolled_for_tier(cases, cfg_staff, cfg)
-    target = cfg_staff.targets.get(run_month, 0)
-    tier = determine_tier(enrolled_count, target, inherited_tier)
+    target, scheme = cfg.get_staff_target(staff_name, year, month)
+    enrolled_count  = count_enrolled_for_tier(cases, scheme, cfg)
+    if enrolled_override >= 0:
+        enrolled_count = enrolled_override
+    tier            = determine_tier(enrolled_count, target, inherited_tier)
 
-    # STEP 2-9: Calculate BASE rows
-    for cs in cases:
-        if cs.row_type != ROW_TYPE_ADDON:
-            calculate_single_case(
-                cs, cfg_staff, tier, target,
-                enrolled_count, run_month, run_year, cfg
-            )
+    for c in cases:
+        if c.row_type == ROW_ADDON: continue
+        # Cross-office: HN/DN office uses HN rate table — BUT only for CO_DIRECT schemes.
+        # CO_SUB scheme is fixed regardless of sub-agent partner location.
+        case_scheme = (SCHEME_HN_DIRECT
+                       if c.office in (OFFICE_HN, OFFICE_DN)
+                       and scheme not in (SCHEME_HN_DIRECT, SCHEME_CO_SUB)
+                       else scheme)
+        calc_single_case(c, tier, target, enrolled_count,
+                         case_scheme, cfg, month, year, is_counsellor)
 
-    # STEP 9A: Process ADDON rows
     _process_addon_rows(cases, cfg)
 
-    return cases
-
-
-def _process_addon_rows(cases: List[CaseRecord], cfg: BonusConfig):
-    """
-    Processes ADDON rows after all BASE calculations.
-    Mirrors Step 9A in CalculateBonuses (modCalc.bas v6.2).
-    """
-    for addon in cases:
-        if addon.row_type != ROW_TYPE_ADDON:
-            continue
-        if not addon.addon_code or addon.addon_count <= 0:
-            continue
-
-        rule = cfg.get_service_fee(addon.addon_code, "ADDON")
-        if not rule or rule.co_bonus <= 0:
-            addon.note_enrolled = (
-                f"ADDON: code '{addon.addon_code}' not found or zero rate "
-                f"in 09_SERVICE_FEE_RATES (ADDON category)"
-            )
-            continue
-
-        unit_rate  = rule.co_bonus
-        addon_total = unit_rate * addon.addon_count
-
-        # Add to matching BASE row
-        for base in cases:
-            if base.row_type != ROW_TYPE_ADDON and base.contract_id == addon.contract_id:
-                base.bonus_enrolled += addon_total
-                extra = f"Add-on: {addon.addon_code} x{addon.addon_count} = {addon_total:,.0f}"
-                base.note_enrolled = (base.note_enrolled.strip() + " | " + extra).lstrip(" | ")
-                break
-
-        addon.bonus_enrolled = addon_total
-        addon.note_enrolled  = (
-            f"Add-on: {addon.addon_code} x{addon.addon_count} "
-            f"@ {unit_rate:,.0f} = {addon_total:,.0f}"
-        )
+    tier_display = resolve_meet_tier(0) if tier == TIER_MEET else tier
+    return cases, tier_display, target, enrolled_count
