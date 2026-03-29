@@ -22,7 +22,7 @@ app = FastAPI(
 # CORS — allows the Netlify frontend to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=["https://bonusengine.netlify.app", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
