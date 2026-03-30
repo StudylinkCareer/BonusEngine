@@ -11,7 +11,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (token) {
-      api.get('/auth/me')
+      api.get('/api/auth/me')
         .then(r => setUser(r.data))
         .catch(() => localStorage.removeItem('token'))
         .finally(() => setLoading(false))
@@ -28,7 +28,7 @@ export function AuthProvider({ children }) {
       form.append('password', password)
       const r  = await api.post('/api/auth/login', form)
       localStorage.setItem('token', r.data.access_token)
-      const me = await api.get('/auth/me')
+      const me = await api.get('/api/auth/me')
       setUser(me.data)
     } catch {
       setError('Invalid username or password')
