@@ -6,7 +6,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime,
-    Float, ForeignKey, Text, Date, JSON
+    Float, ForeignKey, Text, Date, JSON, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from .database import Base
@@ -159,3 +159,114 @@ class AdvancePayment(Base):
     is_settled      = Column(Boolean, default=False)
     settled_at      = Column(DateTime)
     recorded_at     = Column(DateTime, default=datetime.utcnow)
+
+
+# =============================================================================
+# Reference table models — one class per configurable lookup table
+# =============================================================================
+
+class StaffName(Base):
+    """
+    Master list of staff names — single source of truth used by
+    STAFF_TARGETS, STAFF_NAMES, Pre-sales Agent dropdowns, and
+    counsellor/case officer field validation.
+    Vietnamese UTF-8 names stored natively in PostgreSQL.
+    """
+    __tablename__ = "ref_staff_names"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    full_name     = Column(String(100), unique=True, nullable=False, index=True)
+    short_name    = Column(String(50))
+    office        = Column(String(10))       # HCM | HN | DN
+    role          = Column(String(30))       # counsellor | case_officer | presales | co
+    is_active     = Column(Boolean, default=True)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StaffTarget(Base):
+    """Monthly enrolment targets per staff member."""
+    __tablename__ = "ref_staff_targets"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    staff_name    = Column(String(100), nullable=False, index=True)
+    office        = Column(String(10))
+    month         = Column(Integer, nullable=False)
+    year          = Column(Integer, nullable=False)
+    target        = Column(Integer, default=0)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MasterAgent(Base):
+    """Master agent and group classification."""
+    __tablename__ = "ref_master_agents"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    agent_name    = Column(String(200), nullable=False, index=True)
+    agent_type    = Column(String(30))       # MASTER_AGENT | GROUP | DIRECT
+    office        = Column(String(10))
+    is_active     = Column(Boolean, default=True)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CountryCode(Base):
+    """Country name to code mapping."""
+    __tablename__ = "ref_country_codes"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    country_name  = Column(String(100), unique=True, nullable=False)
+    country_code  = Column(String(10))
+    region        = Column(String(50))
+    is_active     = Column(Boolean, default=True)
+
+
+class ClientTypeMap(Base):
+    """Normalises the many Vietnamese client type variants to a canonical code."""
+    __tablename__ = "ref_client_type_map"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    raw_value     = Column(String(200), unique=True, nullable=False)
+    canonical     = Column(String(50), nullable=False)
+    display_name  = Column(String(200))
+    is_active     = Column(Boolean, default=True)
+
+
+class StatusRule(Base):
+    """Which application statuses are eligible for bonus calculation."""
+    __tablename__ = "ref_status_rules"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    status_value    = Column(String(100), unique=True, nullable=False)
+    is_eligible     = Column(Boolean, default=True)
+    requires_visa   = Column(Boolean, default=False)
+    requires_enrol  = Column(Boolean, default=False)
+    note            = Column(String(200))
+
+
+class ServiceFeeRate(Base):
+    """Fee rates per service fee type."""
+    __tablename__ = "ref_service_fee_rates"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    fee_type        = Column(String(50), unique=True, nullable=False)
+    rate_pct        = Column(Float, default=0.0)
+    flat_amount     = Column(Integer, default=0)
+    note            = Column(String(200))
+    is_active       = Column(Boolean, default=True)
+
+
+class ReferenceList(Base):
+    """
+    Generic key-value store for simple dropdown lists:
+    Package Type, Deferral, Office Override, Add-on Codes, etc.
+    """
+    __tablename__ = "ref_lists"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    list_name     = Column(String(50), nullable=False, index=True)
+    value         = Column(String(200), nullable=False)
+    sort_order    = Column(Integer, default=0)
+    is_active     = Column(Boolean, default=True)
+
+    __table_args__ = (
+        UniqueConstraint('list_name', 'value', name='uq_reflist_name_value'),
+    )

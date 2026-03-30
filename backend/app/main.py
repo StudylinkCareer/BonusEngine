@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import engine, Base
 from .config_settings import settings
-from .routers import upload, cases, calculate, reports, auth
+from .routers import upload, cases, calculate, reports, auth, reference
 
 # Create all tables on startup
 Base.metadata.create_all(bind=engine)
@@ -34,6 +34,7 @@ app.include_router(upload.router,    prefix="/api/upload",    tags=["Upload"])
 app.include_router(cases.router,     prefix="/api/cases",     tags=["Cases"])
 app.include_router(calculate.router, prefix="/api/calculate", tags=["Calculate"])
 app.include_router(reports.router,   prefix="/api/reports",   tags=["Reports"])
+app.include_router(reference.router, prefix="/api/reference", tags=["Reference"])
 
 
 @app.get("/")
