@@ -24,14 +24,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
-# ── Auth — reuse existing dependency ─────────────────────────────
 from .auth import get_current_user
 from ..models import User
+from ..database import get_db
 
-# ── Engine imports ────────────────────────────────────────────────
-ENGINE_WORKBOOK = os.environ.get("ENGINE_WORKBOOK_PATH", "data/config/engine.xlsm")
-
+ENGINE_AVAILABLE = False
 try:
     from ..engine.config import load_config
     from ..engine.input import parse_crm_report
@@ -39,17 +38,11 @@ try:
     from ..engine.calc import calculate_bonuses
     ENGINE_AVAILABLE = True
 except ImportError:
-    ENGINE_AVAILABLE = False
-
-# ── Raw SQLite for new tables ─────────────────────────────────────
-# These three tables (reports, report_cases, field_changes) are separate
-# from the existing SQLAlchemy-managed tables. We use a raw SQLite
-# connection so we don't need to touch your existing models/migrations.
+    pass
 
 DB_PATH = os.environ.get("DB_PATH", "bonusengine.db")
 
 def get_sqlite():
-    """Raw SQLite connection for reports/cases/trail tables."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -57,7 +50,6 @@ def get_sqlite():
     return conn
 
 
-# ── Create tables on import ───────────────────────────────────────
 def _ensure_schema():
     with get_sqlite() as conn:
         conn.executescript("""
@@ -136,15 +128,11 @@ def _ensure_schema():
 
 _ensure_schema()
 
-# ── Router ────────────────────────────────────────────────────────
 router = APIRouter()
 
-# ── Field whitelists ──────────────────────────────────────────────
 EDITABLE_FIELDS = {
-    # Engine-classified — require a comment when changed
     "institution_type", "service_fee_type", "package_type",
     "office", "row_type", "scheme", "note_enrolled",
-    # User-input — comment optional unless engine had a value
     "prior_month_rate", "deferral", "handover", "target_owner",
 }
 ENGINE_FIELDS = {
@@ -153,9 +141,6 @@ ENGINE_FIELDS = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────
-# LIST
-# ─────────────────────────────────────────────────────────────────
 @router.get("/")
 def list_reports(current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -169,9 +154,6 @@ def list_reports(current_user: User = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
-# ─────────────────────────────────────────────────────────────────
-# GET SINGLE REPORT
-# ─────────────────────────────────────────────────────────────────
 @router.get("/{report_id}")
 def get_report(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -183,9 +165,6 @@ def get_report(report_id: str, current_user: User = Depends(get_current_user)):
     return dict(row)
 
 
-# ─────────────────────────────────────────────────────────────────
-# UPLOAD
-# ─────────────────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_report(
     file:       UploadFile = File(...),
@@ -194,13 +173,13 @@ async def upload_report(
     year:       int        = Form(...),
     office:     str        = Form(...),
     notes:      str        = Form(""),
-    current_user: User = Depends(get_current_user),
+    current_user: User     = Depends(get_current_user),
+    db:         Session    = Depends(get_db),
 ):
     content   = await file.read()
     report_id = secrets.token_hex(8)
     import tempfile
     tmp_path = os.path.join(tempfile.gettempdir(), f"{report_id}_{file.filename}")
-
 
     with open(tmp_path, "wb") as f:
         f.write(content)
@@ -210,7 +189,8 @@ async def upload_report(
 
     if ENGINE_AVAILABLE:
         try:
-            cfg = load_config(ENGINE_WORKBOOK)
+            # Load config from PostgreSQL — no xlsm file needed
+            cfg = load_config(db)
             raw_cases, _  = parse_crm_report(tmp_path, cfg)
             classified    = classify_cases(raw_cases, cfg, staff_name, year, month, {})
             calculated, tier, tgt, enr = calculate_bonuses(
@@ -287,8 +267,9 @@ async def upload_report(
             ))
         conn.commit()
 
-        # Add this:
-        saved = conn.execute("SELECT COUNT(*) FROM report_cases WHERE report_id=?", (report_id,)).fetchone()[0]
+        saved = conn.execute(
+            "SELECT COUNT(*) FROM report_cases WHERE report_id=?", (report_id,)
+        ).fetchone()[0]
         print(f"[UPLOAD DEBUG] Cases saved to DB: {saved}")
 
     return {
@@ -302,9 +283,6 @@ async def upload_report(
     }
 
 
-# ─────────────────────────────────────────────────────────────────
-# CASES
-# ─────────────────────────────────────────────────────────────────
 @router.get("/{report_id}/cases")
 def get_cases(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -315,9 +293,6 @@ def get_cases(report_id: str, current_user: User = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
-# ─────────────────────────────────────────────────────────────────
-# AUDIT TRAIL
-# ─────────────────────────────────────────────────────────────────
 @router.get("/{report_id}/trail")
 def get_trail(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -328,9 +303,6 @@ def get_trail(report_id: str, current_user: User = Depends(get_current_user)):
     return [dict(r) for r in rows]
 
 
-# ─────────────────────────────────────────────────────────────────
-# EDIT FIELD (with mandatory comment for engine fields)
-# ─────────────────────────────────────────────────────────────────
 @router.patch("/{report_id}/cases/{case_id}/fields/{field}")
 def update_field(
     report_id: str,
@@ -386,9 +358,6 @@ def update_field(
     return {"ok": True, "field": field, "new_value": new_value}
 
 
-# ─────────────────────────────────────────────────────────────────
-# SUBMIT (Bonus Admin → Manager)
-# ─────────────────────────────────────────────────────────────────
 @router.post("/{report_id}/submit")
 def submit_report(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -400,9 +369,6 @@ def submit_report(report_id: str, current_user: User = Depends(get_current_user)
     return {"ok": True, "status": "submitted"}
 
 
-# ─────────────────────────────────────────────────────────────────
-# APPROVE (Manager / Admin only)
-# ─────────────────────────────────────────────────────────────────
 @router.post("/{report_id}/approve")
 def approve_report(report_id: str, current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
@@ -424,9 +390,6 @@ def approve_report(report_id: str, current_user: User = Depends(get_current_user
     return {"ok": True, "status": "approved"}
 
 
-# ─────────────────────────────────────────────────────────────────
-# RETURN (Manager sends back for revision)
-# ─────────────────────────────────────────────────────────────────
 @router.post("/{report_id}/return")
 def return_report(
     report_id: str,
@@ -456,9 +419,6 @@ def return_report(
     return {"ok": True, "status": "returned"}
 
 
-# ─────────────────────────────────────────────────────────────────
-# BONUS REPORT DATA
-# ─────────────────────────────────────────────────────────────────
 @router.get("/{report_id}/bonus-report")
 def get_bonus_report(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -474,9 +434,6 @@ def get_bonus_report(report_id: str, current_user: User = Depends(get_current_us
     return {**dict(r), "cases": [dict(c) for c in cases]}
 
 
-# ─────────────────────────────────────────────────────────────────
-# PDF DOWNLOAD
-# ─────────────────────────────────────────────────────────────────
 @router.get("/{report_id}/pdf")
 def download_pdf(report_id: str, current_user: User = Depends(get_current_user)):
     with get_sqlite() as conn:
@@ -563,7 +520,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
 
         story = []
 
-        # ── Header ──
         hdr_data = [[
             Paragraph(
                 "<font color='#f59e0b'><b>STUDYLINK CAREER</b></font><br/>"
@@ -589,7 +545,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         ]))
         story.append(hdr)
 
-        # ── Info bar ──
         info = Table([[
             f"Staff: {r['staff_name']}",
             f"Office: {r['office']}",
@@ -610,7 +565,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         story.append(info)
         story.append(Spacer(1, 14))
 
-        # ── Enrolled section ──
         if enrolled:
             story.append(Paragraph("Closed Files — Enrolled / Hồ sơ đã nhập học", h2_s))
             story.append(HRFlowable(width="100%", thickness=1.5, color=NAVY))
@@ -618,7 +572,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
             story.append(make_section_table(enrolled, show_priority=True))
             story.append(Spacer(1, 12))
 
-        # ── Other closed section ──
         if closed:
             story.append(Paragraph("Closed Files — Other / Hồ sơ đóng khác", h2_s))
             story.append(HRFlowable(width="100%", thickness=1, color=BORDER))
@@ -626,7 +579,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
             story.append(make_section_table(closed, show_priority=False))
             story.append(Spacer(1, 16))
 
-        # ── Totals ──
         tots = Table([
             ["Bonus Enrolled / Bonus nhập học", f"{tot_enr:,} ₫"],
             ["Priority Bonus / Bonus ưu tiên",  f"{tot_pri:,} ₫"],
@@ -652,7 +604,6 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         story.append(tots)
         story.append(Spacer(1, 20))
 
-        # ── Footer ──
         footer = Table([[
             Paragraph(f"Generated {datetime.now().strftime('%d %B %Y')}", note_s),
             Paragraph(
@@ -687,24 +638,12 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         )
 
 
-# ─────────────────────────────────────────────────────────────────
-# EMAIL (stub — wire up SendGrid / SES when ready)
-# ─────────────────────────────────────────────────────────────────
 @router.post("/{report_id}/email")
 def send_email(
     report_id: str,
     body: dict,
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Stub endpoint — integrate SendGrid or AWS SES here.
-    body: { "recipient": "staff" | "payroll" }
-    """
     recipient = body.get("recipient", "staff")
-    # TODO: implement email sending, e.g.:
-    # from sendgrid import SendGridAPIClient
-    # from sendgrid.helpers.mail import Mail
-    # sg = SendGridAPIClient(os.environ["SENDGRID_API_KEY"])
-    # sg.send(Mail(...))
     print(f"[EMAIL STUB] report={report_id} recipient={recipient}")
     return {"ok": True, "recipient": recipient, "status": "stub"}

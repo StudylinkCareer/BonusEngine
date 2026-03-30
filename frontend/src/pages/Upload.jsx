@@ -1,24 +1,37 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { uploadReport } from '../api/client.js'
+import api from '../api/client.js'
 
-const STAFF   = ['Đoàn Ngọc Trúc Quỳnh','Lê Thị Trường An','Nguyễn Thành Vinh','Nguyễn Thị Mỹ Ly','Phạm Thị Lợi','Phạm Thị Ngọc Thảo','Quan Hoàng Yến','Thái Thị Huỳnh Anh','Trần Thanh Gia Mẫn']
 const MONTHS  = ['January','February','March','April','May','June','July','August','September','October','November','December']
 const OFFICES = ['HCM','HN','DN']
 const YEARS   = [2024, 2025, 2026]
 
 export default function Upload() {
-  const [file, setFile]       = useState(null)
+  const [file, setFile]         = useState(null)
   const [dragging, setDragging] = useState(false)
-  const [staff, setStaff]     = useState('')
-  const [month, setMonth]     = useState('')
-  const [year, setYear]       = useState(new Date().getFullYear())
-  const [office, setOffice]   = useState('HCM')
-  const [notes, setNotes]     = useState('')
+  const [staff, setStaff]       = useState('')
+  const [month, setMonth]       = useState('')
+  const [year, setYear]         = useState(new Date().getFullYear())
+  const [office, setOffice]     = useState('HCM')
+  const [notes, setNotes]       = useState('')
   const [uploading, setUploading] = useState(false)
-  const [error, setError]     = useState('')
+  const [error, setError]       = useState('')
+  const [staffList, setStaffList] = useState([])
   const inputRef = useRef()
   const navigate = useNavigate()
+
+  // Load staff names from reference tables
+  useEffect(() => {
+    api.get('/api/reference/lists')
+      .then(res => {
+        if (res.data?.staff_names?.length) {
+          setStaffList(res.data.staff_names)
+        }
+      })
+      .catch(() => {
+        setError('Could not load staff list. Please refresh the page.')
+      })
+  }, [])
 
   const handleDrop = e => {
     e.preventDefault(); setDragging(false)
@@ -32,8 +45,16 @@ export default function Upload() {
     setError(''); setUploading(true)
     try {
       const monthNum = MONTHS.indexOf(month) + 1
-      const data = await uploadReport(file, staff, monthNum, year, office, notes)
-      navigate(`/review/${data.id}`)
+      const form = new FormData()
+      form.append('file', file)
+      form.append('staff_name', staff)
+      form.append('run_month', monthNum)
+      form.append('run_year', year)
+      form.append('office', office)
+      if (notes) form.append('notes', notes)
+
+      const res = await api.post('/api/upload/crm', form)
+      navigate(`/review/${res.data.run_id}`)
     } catch (e) {
       setError(e.response?.data?.detail || e.message || 'Upload failed. Please try again.')
     } finally { setUploading(false) }
@@ -87,7 +108,7 @@ export default function Upload() {
             <label>Staff Member *</label>
             <select value={staff} onChange={e => setStaff(e.target.value)}>
               <option value="">Select staff member…</option>
-              {STAFF.map(s => <option key={s}>{s}</option>)}
+              {staffList.map(s => <option key={s}>{s}</option>)}
             </select>
           </div>
           <div>
