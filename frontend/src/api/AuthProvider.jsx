@@ -26,7 +26,7 @@ export function AuthProvider({ children }) {
       const form = new FormData()
       form.append('username', username)
       form.append('password', password)
-      const r  = await api.post('/auth/login', form)
+      const r  = await api.post('/api/auth/login', form)
       localStorage.setItem('token', r.data.access_token)
       const me = await api.get('/auth/me')
       setUser(me.data)
