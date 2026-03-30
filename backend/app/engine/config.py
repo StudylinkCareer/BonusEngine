@@ -104,6 +104,14 @@ class PartnerInstitutionRateObj:
     coun_amount: int = 0
 
 
+# Alias for backward compatibility with calc.py which imports StatusRule
+StatusRule = StatusRuleObj
+
+
+# Backwards-compatible alias — calc.py imports StatusRule from this module
+StatusRule = StatusRuleObj
+
+
 class BonusConfig:
     def __init__(self):
         self.status_rules:      Dict[str, StatusRuleObj]         = {}
