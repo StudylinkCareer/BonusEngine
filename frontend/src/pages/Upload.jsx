@@ -7,22 +7,21 @@ const OFFICES = ['HCM','HN','DN']
 const YEARS   = [2024, 2025, 2026]
 
 export default function Upload() {
-  const [file, setFile]         = useState(null)
-  const [dragging, setDragging] = useState(false)
-  const [staff, setStaff]       = useState('')
-  const [month, setMonth]       = useState('')
-  const [year, setYear]         = useState(new Date().getFullYear())
-  const [office, setOffice]     = useState('HCM')
-  const [notes, setNotes]       = useState('')
+  const [file, setFile]           = useState(null)
+  const [dragging, setDragging]   = useState(false)
+  const [staff, setStaff]         = useState('')
+  const [month, setMonth]         = useState('')
+  const [year, setYear]           = useState(new Date().getFullYear())
+  const [office, setOffice]       = useState('HCM')
+  const [notes, setNotes]         = useState('')
   const [uploading, setUploading] = useState(false)
-  const [error, setError]       = useState('')
+  const [error, setError]         = useState('')
   const [staffList, setStaffList] = useState([])
   const inputRef = useRef()
   const navigate = useNavigate()
 
-  // Load staff names from reference tables
   useEffect(() => {
-    api.get('/api/reference/lists')
+    api.get('/reference/lists')
       .then(res => {
         if (res.data?.staff_names?.length) {
           setStaffList(res.data.staff_names)
@@ -48,13 +47,13 @@ export default function Upload() {
       const form = new FormData()
       form.append('file', file)
       form.append('staff_name', staff)
-      form.append('run_month', monthNum)
-      form.append('run_year', year)
+      form.append('month', monthNum)
+      form.append('year', year)
       form.append('office', office)
       if (notes) form.append('notes', notes)
 
-      const res = await api.post('/api/upload/crm', form)
-      navigate(`/review/${res.data.run_id}`)
+      const res = await api.post('/reports/upload', form)
+      navigate(`/review/${res.data.id}`)
     } catch (e) {
       setError(e.response?.data?.detail || e.message || 'Upload failed. Please try again.')
     } finally { setUploading(false) }

@@ -1,47 +1,41 @@
 // frontend/src/pages/ReferenceTablesPage.jsx
 // Admin-only page for managing all reference/lookup tables
-// Upload/download each table, add/remove individual values
 
 import { useState, useEffect } from "react"
-import axios from "axios"
+import api from "../api/client.js"
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL,
-  headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
-})
-
-// Table definitions — label, endpoint, uploadable, columns to show
 const TABLES = [
-  { key: "staff-names",    label: "12 — Staff Names",        uploadable: false, download: true,  addable: true },
-  { key: "staff-targets",  label: "04 — Staff Targets",      uploadable: true,  download: true,  addable: false },
-  { key: "master-agents",  label: "11 — Master Agents",      uploadable: true,  download: true,  addable: false },
-  { key: "country-codes",  label: "14 — Country Codes",      uploadable: false, download: true,  addable: false },
-  { key: "client-type-map",label: "15 — Client Type Map",    uploadable: false, download: true,  addable: false },
-  { key: "status-rules",   label: "05 — Status Rules",       uploadable: false, download: true,  addable: false },
-  { key: "package_type",   label: "Package Type List",        uploadable: false, download: false, addable: true,  listName: "package_type" },
-  { key: "service_fee_type",label:"Service Fee Type List",   uploadable: false, download: false, addable: true,  listName: "service_fee_type" },
-  { key: "addon_code",     label: "Add-on Code List",         uploadable: false, download: false, addable: true,  listName: "addon_code" },
-  { key: "deferral",       label: "Deferral List",            uploadable: false, download: false, addable: true,  listName: "deferral" },
-  { key: "institution_type",label:"Institution Type List",   uploadable: false, download: false, addable: true,  listName: "institution_type" },
+  { key: "staff-names",     label: "12 — Staff Names",       uploadable: false, download: true,  addable: true },
+  { key: "staff-targets",   label: "04 — Staff Targets",     uploadable: true,  download: true,  addable: false },
+  { key: "master-agents",   label: "11 — Master Agents",     uploadable: true,  download: true,  addable: false },
+  { key: "country-codes",   label: "14 — Country Codes",     uploadable: false, download: true,  addable: false },
+  { key: "client-type-map", label: "15 — Client Type Map",   uploadable: false, download: true,  addable: false },
+  { key: "status-rules",    label: "05 — Status Rules",      uploadable: false, download: true,  addable: false },
+  { key: "package_type",    label: "Package Type List",       uploadable: false, download: false, addable: true, listName: "package_type" },
+  { key: "service_fee_type",label: "Service Fee Type List",  uploadable: false, download: false, addable: true, listName: "service_fee_type" },
+  { key: "addon_code",      label: "Add-on Code List",        uploadable: false, download: false, addable: true, listName: "addon_code" },
+  { key: "deferral",        label: "Deferral List",           uploadable: false, download: false, addable: true, listName: "deferral" },
+  { key: "institution_type",label: "Institution Type List",  uploadable: false, download: false, addable: true, listName: "institution_type" },
 ]
 
 export default function ReferenceTablesPage() {
   const [activeTable, setActiveTable] = useState(TABLES[0])
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState(null)
-  const [uploadFile, setUploadFile] = useState(null)
-  const [newValue, setNewValue] = useState("")
+  const [rows, setRows]               = useState([])
+  const [loading, setLoading]         = useState(false)
+  const [message, setMessage]         = useState(null)
+  const [uploadFile, setUploadFile]   = useState(null)
+  const [newValue, setNewValue]       = useState("")
 
   useEffect(() => { loadTable() }, [activeTable])
 
   async function loadTable() {
     setLoading(true)
     setRows([])
+    setMessage(null)
     try {
       const endpoint = activeTable.listName
-        ? `/api/reference/ref-list/${activeTable.listName}`
-        : `/api/reference/${activeTable.key}`
+        ? `/reference/ref-list/${activeTable.listName}`
+        : `/reference/${activeTable.key}`
       const res = await api.get(endpoint)
       setRows(res.data)
     } catch (e) {
@@ -52,9 +46,8 @@ export default function ReferenceTablesPage() {
 
   async function handleDownload() {
     try {
-      const res = await api.get(`/api/reference/download/${activeTable.key.replace("-", "_")}`, {
-        responseType: "blob"
-      })
+      const key = activeTable.key.replace(/-/g, "_")
+      const res = await api.get(`/reference/download/${key}`, { responseType: "blob" })
       const url = URL.createObjectURL(res.data)
       const a = document.createElement("a")
       a.href = url
@@ -71,7 +64,7 @@ export default function ReferenceTablesPage() {
     const form = new FormData()
     form.append("file", uploadFile)
     try {
-      const res = await api.post(`/api/reference/${activeTable.key}/upload`, form)
+      const res = await api.post(`/reference/${activeTable.key}/upload`, form)
       setMessage({ type: "success", text: `Uploaded: ${res.data.rows_added} rows. ${res.data.warnings?.join(", ") || ""}` })
       loadTable()
     } catch (e) {
@@ -83,7 +76,7 @@ export default function ReferenceTablesPage() {
   async function handleAddValue() {
     if (!newValue.trim()) return
     try {
-      await api.post(`/api/reference/ref-list/${activeTable.listName}`, { value: newValue.trim() })
+      await api.post(`/reference/ref-list/${activeTable.listName}`, { value: newValue.trim() })
       setNewValue("")
       setMessage({ type: "success", text: "Value added." })
       loadTable()
@@ -95,7 +88,7 @@ export default function ReferenceTablesPage() {
   async function handleAddStaff() {
     if (!newValue.trim()) return
     try {
-      await api.post(`/api/reference/staff-names`, { full_name: newValue.trim(), is_active: true })
+      await api.post(`/reference/staff-names`, { full_name: newValue.trim(), is_active: true })
       setNewValue("")
       setMessage({ type: "success", text: "Staff name added." })
       loadTable()
@@ -106,8 +99,8 @@ export default function ReferenceTablesPage() {
 
   async function handleDelete(row) {
     const endpoint = activeTable.listName
-      ? `/api/reference/ref-list/${activeTable.listName}/${row.id}`
-      : `/api/reference/${activeTable.key}/${row.id}`
+      ? `/reference/ref-list/${activeTable.listName}/${row.id}`
+      : `/reference/${activeTable.key}/${row.id}`
     try {
       await api.delete(endpoint)
       setMessage({ type: "success", text: "Deleted." })
@@ -130,19 +123,12 @@ export default function ReferenceTablesPage() {
           REFERENCE TABLES
         </div>
         {TABLES.map(t => (
-          <div
-            key={t.key}
-            onClick={() => { setActiveTable(t); setMessage(null) }}
+          <div key={t.key} onClick={() => { setActiveTable(t); setMessage(null) }}
             style={{
-              padding: "8px 12px",
-              borderRadius: 6,
-              cursor: "pointer",
-              marginBottom: 4,
-              fontSize: 13,
+              padding: "8px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 4, fontSize: 13,
               background: activeTable.key === t.key ? "#2d3f6b" : "transparent",
               color: activeTable.key === t.key ? "#fff" : "#aab",
-            }}
-          >
+            }}>
             {t.label}
           </div>
         ))}
@@ -152,28 +138,20 @@ export default function ReferenceTablesPage() {
       <div style={{ flex: 1, padding: 24, overflowY: "auto", background: "#f4f6fa" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 20 }}>{activeTable.label}</h2>
-
           <div style={{ display: "flex", gap: 8 }}>
             {activeTable.download && (
-              <button onClick={handleDownload} style={btnStyle("#2563eb")}>
-                ⬇ Download Excel
-              </button>
+              <button onClick={handleDownload} style={btnStyle("#2563eb")}>⬇ Download Excel</button>
             )}
             {activeTable.uploadable && (
               <label style={btnStyle("#16a34a")}>
                 ⬆ Upload Excel
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  style={{ display: "none" }}
-                  onChange={e => { setUploadFile(e.target.files[0]); }}
-                />
+                <input type="file" accept=".xlsx" style={{ display: "none" }}
+                  onChange={e => setUploadFile(e.target.files[0])} />
               </label>
             )}
           </div>
         </div>
 
-        {/* Upload pending */}
         {uploadFile && (
           <div style={{ background: "#fff3cd", padding: 12, borderRadius: 8, marginBottom: 12, display: "flex", gap: 12, alignItems: "center" }}>
             <span>Ready to upload: <strong>{uploadFile.name}</strong></span>
@@ -182,37 +160,26 @@ export default function ReferenceTablesPage() {
           </div>
         )}
 
-        {/* Message */}
         {message && (
           <div style={{
             padding: 12, borderRadius: 8, marginBottom: 12,
             background: message.type === "error" ? "#fee2e2" : "#d1fae5",
-            color: message.type === "error" ? "#b91c1c" : "#065f46",
-            fontSize: 13
+            color: message.type === "error" ? "#b91c1c" : "#065f46", fontSize: 13
           }}>
             {message.text}
           </div>
         )}
 
-        {/* Add new value */}
-        {(activeTable.addable) && (
+        {activeTable.addable && (
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <input
-              value={newValue}
-              onChange={e => setNewValue(e.target.value)}
+            <input value={newValue} onChange={e => setNewValue(e.target.value)}
               placeholder={activeTable.key === "staff-names" ? "Full name (Vietnamese OK)" : "New value..."}
-              style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13 }}
-            />
-            <button
-              onClick={activeTable.key === "staff-names" ? handleAddStaff : handleAddValue}
-              style={btnStyle("#7c3aed")}
-            >
-              + Add
-            </button>
+              style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13 }} />
+            <button onClick={activeTable.key === "staff-names" ? handleAddStaff : handleAddValue}
+              style={btnStyle("#7c3aed")}>+ Add</button>
           </div>
         )}
 
-        {/* Table */}
         {loading ? (
           <div style={{ color: "#888", fontSize: 13 }}>Loading...</div>
         ) : (
@@ -232,16 +199,12 @@ export default function ReferenceTablesPage() {
                 {rows.map((row, i) => (
                   <tr key={row.id || i} style={{ borderBottom: "1px solid #f3f4f6" }}>
                     {columns.map(c => (
-                      <td key={c} style={{ padding: "9px 14px", color: "#1f2937" }}>
-                        {String(row[c] ?? "")}
-                      </td>
+                      <td key={c} style={{ padding: "9px 14px", color: "#1f2937" }}>{String(row[c] ?? "")}</td>
                     ))}
                     <td style={{ padding: "9px 14px" }}>
-                      {(activeTable.addable) && (
-                        <button
-                          onClick={() => handleDelete(row)}
-                          style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }}
-                        >
+                      {activeTable.addable && (
+                        <button onClick={() => handleDelete(row)}
+                          style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }}>
                           Remove
                         </button>
                       )}
@@ -250,9 +213,7 @@ export default function ReferenceTablesPage() {
                 ))}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={columns.length + 1} style={{ padding: 20, textAlign: "center", color: "#9ca3af" }}>
-                      No data
-                    </td>
+                    <td colSpan={columns.length + 1} style={{ padding: 20, textAlign: "center", color: "#9ca3af" }}>No data</td>
                   </tr>
                 )}
               </tbody>
@@ -265,9 +226,5 @@ export default function ReferenceTablesPage() {
 }
 
 function btnStyle(bg) {
-  return {
-    background: bg, color: "#fff", border: "none",
-    padding: "8px 14px", borderRadius: 6, cursor: "pointer",
-    fontSize: 13, fontWeight: 500
-  }
+  return { background: bg, color: "#fff", border: "none", padding: "8px 14px", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500 }
 }
