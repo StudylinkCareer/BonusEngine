@@ -1,15 +1,11 @@
-# =============================================================================
-# routers/auth.py
-# Authentication endpoints — login, token, current user.
-# =============================================================================
-
 from datetime import datetime, timedelta
 from typing import Optional
+import hashlib
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -18,17 +14,18 @@ from ..schemas import Token, TokenData, UserCreate, UserOut
 from ..config_settings import settings
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
+def hash_password(password: str) -> str:
+    salt = os.urandom(32)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return salt.hex() + ':' + key.hex()
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
+    salt_hex, key_hex = hashed.split(':')
+    salt = bytes.fromhex(salt_hex)
+    key = hashlib.pbkdf2_hmac('sha256', plain.encode(), salt, 100000)
+    return key.hex() == key_hex
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -36,11 +33,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
-
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
-) -> User:
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -53,33 +46,23 @@ def get_current_user(
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise credentials_exception
     return user
-
 
 def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-
 @router.post("/login", response_model=Token)
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
-):
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
     token = create_access_token({"sub": user.username})
     return {"access_token": token, "token_type": "bearer"}
-
 
 @router.post("/register", response_model=UserOut)
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
@@ -96,7 +79,6 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     return user
-
 
 @router.get("/me", response_model=UserOut)
 def me(current_user: User = Depends(get_current_user)):
