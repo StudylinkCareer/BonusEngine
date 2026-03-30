@@ -7,8 +7,9 @@ export default function NavBar({ user }) {
   const { logout } = useAuth()
 
   const nav = [
-    { path:'/dashboard', label:'Dashboard', icon:'▦' },
-    { path:'/upload',    label:'Upload',    icon:'↑' },
+    { path:'/dashboard',  label:'Dashboard',        icon:'▦' },
+    { path:'/upload',     label:'Upload',            icon:'↑' },
+    ...(user?.is_admin ? [{ path:'/reference', label:'Reference Tables', icon:'⚙' }] : []),
   ]
 
   return (
