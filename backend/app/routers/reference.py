@@ -131,30 +131,101 @@ def get_staff_targets(month: Optional[int]=None, year: Optional[int]=None,
     return q.order_by(StaffTarget.year, StaffTarget.month, StaffTarget.staff_name).all()
 
 @router.post("/staff-targets/upload")
-async def upload_staff_targets(file: UploadFile=File(...),
-                                month: int=None, year: int=None,
-                                db: Session=Depends(get_db),
-                                admin: User=Depends(get_admin_user)):
+async def upload_staff_targets(
+    file: UploadFile = File(...),
+    replace_years: str = "",
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_admin_user),
+):
+    """
+    Upload a staff targets Excel file using the 04_STAFF_TARGETS template format
+    (year-section layout with Office / Role / Partner columns and Jan–Dec month columns).
+
+    replace_years: optional comma-separated years to replace e.g. "2025,2026".
+    If blank, all years found in the file are replaced.
+
+    Multi-office rows (e.g. Hoàng Yến HCM + HN) are stored as separate DB rows;
+    the engine sums them automatically for tier calculation.
+    """
+    import tempfile, os, re
+
     content = await file.read()
-    try: df = pd.read_excel(io.BytesIO(content))
-    except Exception as e: raise HTTPException(400, f"Could not read file: {e}")
-    df.columns = df.columns.str.lower()
-    if not {"staff_name","target"}.issubset(set(df.columns)):
-        raise HTTPException(400, "File must have columns: staff_name, target")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp.write(content); tmp_path = tmp.name
+
+    try:
+        from ..engine.parse_staff_targets import parse_targets_excel
+        records, parse_warnings = parse_targets_excel(tmp_path)
+    except ImportError:
+        # Fallback: simple flat format (staff_name, month, year, target columns)
+        try:
+            df = pd.read_excel(io.BytesIO(content))
+            df.columns = df.columns.str.lower()
+            records = []
+            for _, row in df.iterrows():
+                for m in range(1, 13):
+                    records.append({
+                        "staff_name": str(row.get("staff_name","")),
+                        "office":     str(row.get("office","")) if pd.notna(row.get("office","")) else "",
+                        "year":       int(row.get("year", 0)),
+                        "month":      m,
+                        "target":     int(row.get(str(m), 0)),
+                    })
+            parse_warnings = []
+        except Exception as e:
+            raise HTTPException(400, f"Could not parse file: {e}")
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse file: {e}")
+    finally:
+        os.unlink(tmp_path)
+
+    if not records:
+        raise HTTPException(400, f"No target records found. Warnings: {parse_warnings}")
+
+    years_in_file = sorted(set(r["year"] for r in records if r.get("year")))
+    if replace_years:
+        try:
+            years_to_replace = [int(y.strip()) for y in replace_years.split(",")]
+        except:
+            raise HTTPException(400, "replace_years must be comma-separated integers e.g. '2025,2026'")
+    else:
+        years_to_replace = years_in_file
+
+    deleted = db.query(StaffTarget).filter(
+        StaffTarget.year.in_(years_to_replace)
+    ).delete(synchronize_session=False)
+
     valid_names = {r.full_name for r in db.query(StaffName).all()}
-    warnings = [f"Unknown: {n}" for n in df["staff_name"].unique() if n not in valid_names]
-    if month and year:
-        db.query(StaffTarget).filter(StaffTarget.month==month, StaffTarget.year==year).delete()
+    name_warnings = []
     rows_added = 0
-    for _, row in df.iterrows():
-        db.add(StaffTarget(staff_name=row["staff_name"],
-                           office=row.get("office", None),
-                           month=month or int(row.get("month",0)),
-                           year=year or int(row.get("year",0)),
-                           target=int(row["target"])))
-        rows_added+=1
+
+    for rec in records:
+        if rec.get("year") not in years_to_replace:
+            continue
+        name = rec.get("staff_name","").strip()
+        if not name:
+            continue
+        if name not in valid_names:
+            w = f"'{name}' not in staff names table — imported anyway"
+            if w not in name_warnings:
+                name_warnings.append(w)
+        db.add(StaffTarget(
+            staff_name = name,
+            office     = rec.get("office") or None,
+            month      = rec.get("month", 0),
+            year       = rec.get("year", 0),
+            target     = rec.get("target", 0),
+        ))
+        rows_added += 1
+
     db.commit()
-    return {"rows_added": rows_added, "warnings": warnings}
+    return {
+        "rows_deleted":   deleted,
+        "rows_added":     rows_added,
+        "years_replaced": years_to_replace,
+        "years_in_file":  years_in_file,
+        "warnings":       parse_warnings + name_warnings,
+    }
 
 
 # =============================================================================
