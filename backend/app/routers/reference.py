@@ -421,6 +421,25 @@ def add_status_rule(data: dict, db: Session=Depends(get_db),
 
 
 # =============================================================================
+# SERVICE FEE RATES
+# =============================================================================
+
+@router.get("/service-fee-rates")
+def get_service_fee_rates(db: Session=Depends(get_db),
+                          current_user: User=Depends(get_current_user)):
+    return db.query(ServiceFeeRate).filter(ServiceFeeRate.is_active==True)\
+             .order_by(ServiceFeeRate.fee_type).all()
+
+@router.put("/service-fee-rates/{id}")
+def update_service_fee_rate(id: int, data: dict, db: Session=Depends(get_db),
+                             admin: User=Depends(get_admin_user)):
+    row = db.query(ServiceFeeRate).filter(ServiceFeeRate.id==id).first()
+    if not row: raise HTTPException(404, "Not found")
+    for k,v in data.items(): setattr(row, k, v)
+    db.commit(); db.refresh(row); return row
+
+
+# =============================================================================
 # PRIORITY INSTITUTIONS / YTD TRACKER / ADVANCE PAYMENTS / CLIENT WEIGHTS
 # =============================================================================
 
