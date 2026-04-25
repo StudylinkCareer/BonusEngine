@@ -156,6 +156,51 @@ class BonusConfig:
         if not r or not r.active: return None
         if category and r.category.upper() != category.upper(): return None
         return r
+    
+    def resolve_service_code(self, text: str, category: str = "") -> Optional[str]:
+        """
+        Resolve a free-text service or package name to a canonical service_code.
+
+        Two-step resolution:
+        1. Direct code match: 'USA_STANDARD_16TR' → 'USA_STANDARD_16TR'
+        2. Keyword fallback: scans ref_service_fee_rates.keywords (pipe-separated)
+            for a substring match against `text`. Longest keyword wins, so a
+            specific token like '9tr5' beats a generic token like 'standard'
+            when both rows have keywords matching the input.
+
+        The category filter scopes resolution to PACKAGE / SERVICE_FEE / CONTRACT.
+
+        Returns canonical service_code (e.g. 'USA_STANDARD_16TR') or None.
+        """
+        if not text:
+            return None
+        text_lower = text.strip().lower()
+        if text_lower in ("none", ""):
+            return None
+
+        # Step 1: direct code match
+        direct = self.service_fees.get(text_lower)
+        if direct and direct.active:
+            if not category or direct.category.upper() == category.upper():
+                return direct.code
+
+        # Step 2: keyword fallback — collect (keyword, code) pairs, longest first
+        candidates: List[Tuple[str, str]] = []
+        for rule in self.service_fees.values():
+            if not rule.active or not rule.keywords:
+                continue
+            if category and rule.category.upper() != category.upper():
+                continue
+            for kw in rule.keywords.split("|"):
+                kw = kw.strip().lower()
+                if kw:
+                    candidates.append((kw, rule.code))
+        candidates.sort(key=lambda x: len(x[0]), reverse=True)
+
+        for kw, code in candidates:
+            if kw in text_lower:
+                return code
+        return None
 
     def resolve_staff_name(self, crm_name: str) -> str:
         return self.staff_name_map.get(crm_name.strip().lower(), crm_name.strip())

@@ -225,11 +225,15 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         print(f"  DEBUG {c.contract_id}: after_priority={c.bonus_enrolled:,}")
     _apply_advance_offset(c, sr)
 
-
 def _apply_package(c: CaseRecord, is_counsellor: bool,
                    cfg: BonusConfig, sr: StatusRule) -> None:
     """Applies package bonus. For current-enrolled, applies 50% split."""
     if c.package_type and c.package_type.upper() not in (PKG_NONE, ""):
+        # Resolve free-text package name to canonical code, then standardise
+        # c.package_type so downstream notes/output use the standard form.
+        resolved = cfg.resolve_service_code(c.package_type, SVC_PACKAGE)
+        if resolved:
+            c.package_type = resolved
         pf = cfg.get_service_fee(c.package_type, SVC_PACKAGE)
         if pf:
             amt = pf.coun_bonus if is_counsellor else pf.co_bonus
@@ -241,7 +245,6 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
                 c.note_enrolled = (
                     c.note_enrolled + f" | Package {c.package_type}: +{amt:,.0f}"
                 ).strip(" | ")
-
 
 def _apply_priority(c: CaseRecord, cfg: BonusConfig) -> None:
     if c.bonus_enrolled <= 0: return
