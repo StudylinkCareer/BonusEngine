@@ -24,3 +24,11 @@ backend/bonusengine.db
 
 # Engine workbook (large binary, stored locally only)
 backend/data/config/engine.xlsm
+backend/app/__pycache__/main.cpython-311.pyc
+backend/app/__pycache__/main.cpython-311.pyc
+backend/app/__pycache__/schemas.cpython-311.pyc
+backend/app/__pycache__/schemas.cpython-311.pyc
+backend/bonusengine.db-shm
+backend/bonusengine.db-wal
+backend/bonusengine.db-shm
+backend/bonusengine.db-wal
