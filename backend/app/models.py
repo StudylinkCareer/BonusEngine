@@ -527,6 +527,31 @@ class PriorityInstitution(Base):
     sub_target       = Column(Integer, default=0)
     is_active        = Column(Boolean, default=True)
     updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    aliases = relationship("InstitutionAlias", back_populates="institution",
+                           cascade="all, delete-orphan")
+
+
+class InstitutionAlias(Base):
+    """
+    Alternative names for priority institutions. Many aliases per canonical row.
+
+    Why: CRM data uses inconsistent or Vietnamese names for the same institution
+    (e.g. "Department of Education and Early Chilhood Development, Victoria" vs
+    "VIC DET"). Each alias here is matched by calc.py's substring logic so the
+    priority bonus pays regardless of which name appears in the CRM file.
+
+    Aliases inherit all bonus parameters (bonus_pct, annual_target, achieved_ytd)
+    from their parent PriorityInstitution row. YTD counts are tracked under the
+    canonical name only.
+    """
+    __tablename__ = "ref_institution_aliases"
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    priority_instn_id = Column(Integer, ForeignKey("ref_priority_instns.id"),
+                               nullable=False, index=True)
+    alias_name        = Column(String(300), nullable=False, index=True)
+    is_active         = Column(Boolean, default=True)
+    updated_at        = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    institution = relationship("PriorityInstitution", back_populates="aliases")
 
 
 class YtdTracker(Base):

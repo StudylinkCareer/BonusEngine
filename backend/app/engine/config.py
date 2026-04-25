@@ -453,19 +453,39 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
     if skip:
         cfg.skip_labels = frozenset(r.value.lower() for r in skip)
 
-    # ── Priority Institutions ─────────────────────────────────────────────────
+    # ── Priority Institutions (with aliases) ─────────────────────────────────
+    # Each canonical row produces one PriorityInstitutionObj. Each alias of
+    # that row produces an additional virtual PriorityInstitutionObj sharing
+    # the same bonus_pct, annual_target, and achieved_ytd. calc.py's substring
+    # match in _apply_priority then finds a hit regardless of which name the
+    # CRM data uses. YTD is still tracked against the canonical name only.
     ytd_lookup: Dict[str, int] = {}
     for y in db.query(YtdTracker).filter(YtdTracker.year==today.year).all():
         ytd_lookup[y.institution_name.lower()] = ytd_lookup.get(y.institution_name.lower(), 0) + y.enrolment_count
 
+    # Pre-load aliases keyed by parent priority_instn_id
+    from ..models import InstitutionAlias
+    aliases_by_parent: Dict[int, List[str]] = {}
+    for a in db.query(InstitutionAlias).filter(InstitutionAlias.is_active==True).all():
+        aliases_by_parent.setdefault(a.priority_instn_id, []).append(a.alias_name)
+
     for r in db.query(PriorityInstitution).filter(PriorityInstitution.is_active==True).all():
         ytd = ytd_lookup.get(r.institution_name.lower(), 0)
+        # Canonical entry
         cfg.priority_instns.append(PriorityInstitutionObj(
             name=r.institution_name,
             bonus_pct=r.bonus_pct,
             annual_target=r.annual_target,
             achieved_ytd=ytd,
         ))
+        # One virtual entry per alias — same bonus parameters, alias as the name
+        for alias_name in aliases_by_parent.get(r.id, []):
+            cfg.priority_instns.append(PriorityInstitutionObj(
+                name=alias_name,
+                bonus_pct=r.bonus_pct,
+                annual_target=r.annual_target,
+                achieved_ytd=ytd,
+            ))
 
     # ── Base Rates — from ref_base_rates ─────────────────────────────────────
     for r in db.query(BaseRate).filter(BaseRate.is_active==True).all():
