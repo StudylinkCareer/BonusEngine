@@ -48,6 +48,9 @@ class ServiceFeeRuleObj:
     code: str
     co_bonus: int = 0
     coun_bonus: int = 0
+    category: str = "SERVICE_FEE"   # SERVICE_FEE | PACKAGE | CONTRACT
+    applies_to: str = "ALL"          # ALL | DIRECT | OUT_OF_SYSTEM | MASTER_AGENT
+    keywords: str = ""
     active: bool = True
     description: str = ""
 
@@ -372,9 +375,15 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
 
     # ── Service Fees ──────────────────────────────────────────────────────────
     for r in db.query(ServiceFeeRate).filter(ServiceFeeRate.is_active==True).all():
-        cfg.service_fees[r.fee_type.lower()] = ServiceFeeRuleObj(
-            code=r.fee_type, co_bonus=r.flat_amount, coun_bonus=0,
-            active=True, description=r.note or "",
+        cfg.service_fees[r.service_code.lower()] = ServiceFeeRuleObj(
+            code=r.service_code,
+            co_bonus=r.co_bonus,
+            coun_bonus=r.coun_bonus,
+            category=r.category or "SERVICE_FEE",
+            applies_to=r.applies_to or "ALL",
+            keywords=r.keywords or "",
+            active=True,
+            description=r.description or "",
         )
 
     # ── Master Agents ─────────────────────────────────────────────────────────

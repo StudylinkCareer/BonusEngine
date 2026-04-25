@@ -428,7 +428,7 @@ def add_status_rule(data: dict, db: Session=Depends(get_db),
 def get_service_fee_rates(db: Session=Depends(get_db),
                           current_user: User=Depends(get_current_user)):
     return db.query(ServiceFeeRate).filter(ServiceFeeRate.is_active==True)\
-             .order_by(ServiceFeeRate.fee_type).all()
+             .order_by(ServiceFeeRate.service_code).all()
 
 @router.put("/service-fee-rates/{id}")
 def update_service_fee_rate(id: int, data: dict, db: Session=Depends(get_db),
