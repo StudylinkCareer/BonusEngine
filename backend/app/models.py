@@ -424,8 +424,7 @@ class MasterAgent(Base):
     id         = Column(Integer, primary_key=True, index=True)
     agent_name = Column(String(200), nullable=False, index=True)
     agent_type = Column(String(30))   # MASTER_AGENT | GROUP | DIRECT
-    triggers_master_agent_rate = Column(Boolean, default=False)
-    notes     = Column(String(300))
+    office     = Column(String(10))
     is_active  = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -490,14 +489,20 @@ class StatusRule(Base):
 
 
 class ServiceFeeRate(Base):
-    """09_SERVICE_FEE_RATES — Fee rates per service type."""
+    """09_SERVICE_FEE_RATES — Consolidated service fee + contract + package bonus rules."""
     __tablename__ = "ref_service_fee_rates"
-    id          = Column(Integer, primary_key=True, index=True)
-    fee_type    = Column(String(50), unique=True, nullable=False)
-    rate_pct    = Column(Float, default=0.0)
-    flat_amount = Column(Integer, default=0)
-    note        = Column(String(200))
-    is_active   = Column(Boolean, default=True)
+    id           = Column(Integer, primary_key=True, index=True)
+    service_code = Column(String(100), unique=True, nullable=False, index=True)
+    keywords     = Column(Text)           # pipe-separated match keywords
+    coun_bonus   = Column(Integer, default=0)
+    co_bonus     = Column(Integer, default=0)
+    category     = Column(String(30))     # SERVICE_FEE | PACKAGE | CONTRACT
+    applies_to   = Column(String(30))     # ALL | DIRECT | OUT_OF_SYSTEM | MASTER_AGENT
+    timing       = Column(String(200))
+    description  = Column(Text)
+    note         = Column(Text)
+    is_active    = Column(Boolean, default=True)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ReferenceList(Base):
