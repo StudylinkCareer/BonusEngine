@@ -96,6 +96,11 @@ def migrate():
         # --- ref_status_rules: add missing columns ---
         sr_columns = {
             "counts_as_enrolled":     "BOOLEAN DEFAULT FALSE",
+            "coun_pct":               "FLOAT DEFAULT 1.0",
+            "co_direct_pct":          "FLOAT DEFAULT 1.0",
+            "co_sub_pct":             "FLOAT DEFAULT 1.0",
+            "start_date":             "DATE",
+            "end_date":               "DATE",
             "is_carry_over":          "BOOLEAN DEFAULT FALSE",
             "is_current_enrolled":    "BOOLEAN DEFAULT FALSE",
             "is_zero_bonus":          "BOOLEAN DEFAULT FALSE",

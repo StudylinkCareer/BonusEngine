@@ -18,7 +18,8 @@ const TABLES = [
   { key:"country-rates",    label:"Flat-Rate Countries",        endpoint:"/reference/country-rates",    download:true,  addable:false, uploadable:false, editableFields:["co_amount","coun_amount","start_date","end_date"] },
   { key:"incentive-tiers",  label:"Incentive Tiers (5M threshold)", endpoint:"/reference/incentive-tiers", download:true, addable:true, uploadable:false, editableFields:["threshold_amount","start_date","end_date"] },
   // RULES
-  { key:"status-rules",     label:"05 — Status Rules & Splits", endpoint:"/reference/status-rules",     download:true,  addable:true,  uploadable:false, editableFields:["coun_pct","co_direct_pct","co_sub_pct","start_date","end_date"] },
+  { key:"status-rules",     label:"05 — Status Rules & Splits", endpoint:"/reference/status-rules",     download:true,  addable:true,  uploadable:false, editableFields:["coun_pct","co_direct_pct","co_sub_pct","start_date","end_date"],
+    columnOrder:["status_value","counts_as_enrolled","coun_pct","co_direct_pct","co_sub_pct","is_carry_over","is_current_enrolled","is_zero_bonus","fees_paid_non_enrolled","requires_visa","dedup_rank","note","is_eligible","requires_enrol","start_date","end_date"] },
   { key:"advance-rules",    label:"Advance Payment Rules",      endpoint:"/reference/advance-rules",    download:true,  addable:true,  uploadable:false, editableFields:["advance_pct","start_date","end_date"] },
   { key:"service-fee-rates",label:"09 — Service Fee Rates",     endpoint:"/reference/service-fee-rates",download:true,  addable:false, uploadable:false },
   { key:"contract-bonuses", label:"07 — Contract Bonuses",      endpoint:"/reference/contract-bonuses", download:true,  addable:false, uploadable:false },
@@ -243,7 +244,9 @@ export default function ReferenceTablesPage() {
   }
 
   const columns = rows.length>0
-    ? Object.keys(rows[0]).filter(k=>!["id","updated_at","recorded_at"].includes(k))
+    ? activeTable.columnOrder
+      ? activeTable.columnOrder.filter(c => c in rows[0])
+      : Object.keys(rows[0]).filter(k=>!["id","updated_at","recorded_at"].includes(k))
     : []
 
   const isEditable = (col) => activeTable.editableFields?.includes(col)
