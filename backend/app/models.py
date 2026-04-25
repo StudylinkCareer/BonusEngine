@@ -421,13 +421,13 @@ class AdvanceRule(Base):
 class MasterAgent(Base):
     """11_MASTER_AGENTS — Master agent and group classification."""
     __tablename__ = "ref_master_agents"
-    id         = Column(Integer, primary_key=True, index=True)
-    agent_name = Column(String(200), nullable=False, index=True)
-    agent_type = Column(String(30))   # MASTER_AGENT | GROUP | DIRECT
-    office     = Column(String(10))
-    is_active  = Column(Boolean, default=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    id                         = Column(Integer, primary_key=True, index=True)
+    agent_name                 = Column(String(200), nullable=False, index=True)
+    agent_type                 = Column(String(30))   # MASTER_AGENT | GROUP | DIRECT
+    triggers_master_agent_rate = Column(Boolean, default=False)
+    notes                      = Column(String(300))
+    is_active                  = Column(Boolean, default=True)
+    updated_at                 = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class CountryCode(Base):
     """14_COUNTRY_CODES — Country name to code mapping."""
@@ -437,7 +437,6 @@ class CountryCode(Base):
     country_code = Column(String(10))
     region       = Column(String(50))
     is_active    = Column(Boolean, default=True)
-
 
 class ClientTypeMap(Base):
     """15_CLIENT_TYPE_MAP — Normalises raw CRM client type text to canonical codes."""
