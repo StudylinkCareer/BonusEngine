@@ -23,8 +23,19 @@ def determine_tier(enrolled: int, target: int, inherited_tier: str = "") -> str:
     return TIER_UNDER
 
 
-def resolve_meet_tier(incentive: int) -> str:
-    return TIER_MEET_HIGH if incentive >= INCENTIVE_THRESHOLD else TIER_MEET_LOW
+def resolve_meet_tier(incentive: int, cfg: "BonusConfig" = None) -> str:
+    """
+    Splits MEET tier into MEET_HIGH / MEET_LOW based on customer incentive value.
+    Threshold is read from the IncentiveTier DB table (type=MEET_THRESHOLD).
+    Falls back to hardcoded INCENTIVE_THRESHOLD if no DB record exists.
+
+    MEET_HIGH = incentive >= threshold → LOWER per-case bonus rate
+      (customer already received a high incentive, so per-case bonus is lower)
+    MEET_LOW  = incentive <  threshold → HIGHER per-case bonus rate
+      (customer received a low incentive, so per-case bonus is higher)
+    """
+    threshold = cfg.incentive_threshold if cfg else INCENTIVE_THRESHOLD
+    return TIER_MEET_HIGH if incentive >= threshold else TIER_MEET_LOW
 
 
 def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
@@ -119,7 +130,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
     if sr.is_carry_over:
         if c.prior_month_rate <= 0 and scheme == SCHEME_CO_SUB:
             # Auto-derive: for CO_SUB, prior rate = tier rate from enrolled month
-            resolved_prior = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive)
+            resolved_prior = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
             c.prior_month_rate = rates.get(resolved_prior, rates.get(TIER_UNDER, 700_000))
         if c.prior_month_rate <= 0:
             c.note_enrolled = "CARRY-OVER: prior month rate missing (col 27)"; return
@@ -140,7 +151,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled = f"Status: {c.app_status} → 0"; return
 
     # ── STEP 7: Base rate ─────────────────────────────────────────────────────
-    resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive)
+    resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
 
     if c.is_flat_country:
         base = rates.get("out_sys_co", 500000)
@@ -314,5 +325,5 @@ def calculate_bonuses(cases: List[CaseRecord], staff_name: str,
 
     _process_addon_rows(cases, cfg)
 
-    tier_display = resolve_meet_tier(0) if tier == TIER_MEET else tier
+    tier_display = resolve_meet_tier(0, cfg) if tier == TIER_MEET else tier
     return cases, tier_display, target, enrolled_count
