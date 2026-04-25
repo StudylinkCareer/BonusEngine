@@ -95,6 +95,7 @@ def migrate():
 
         # --- ref_status_rules: add missing columns ---
         sr_columns = {
+            "counts_as_enrolled":     "BOOLEAN DEFAULT FALSE",
             "is_carry_over":          "BOOLEAN DEFAULT FALSE",
             "is_current_enrolled":    "BOOLEAN DEFAULT FALSE",
             "is_zero_bonus":          "BOOLEAN DEFAULT FALSE",
