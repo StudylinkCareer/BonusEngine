@@ -56,9 +56,9 @@ def get_all_lists(db: Session = Depends(get_db),
                 .filter(ReferenceList.list_name=="application_status", ReferenceList.is_active==True)
                 .order_by(ReferenceList.sort_order).all()]
 
-    service_fees = [r.fee_type for r in
+    service_fees = [r.service_code for r in
                     db.query(ServiceFeeRate).filter(ServiceFeeRate.is_active==True)
-                    .order_by(ServiceFeeRate.fee_type).all()]
+                    .order_by(ServiceFeeRate.service_code).all()]
 
     offices = ["HCM", "HN", "DN"]
 
