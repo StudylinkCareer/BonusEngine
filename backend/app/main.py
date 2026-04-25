@@ -16,7 +16,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="StudyLink Bonus Engine",
     description="Automated bonus calculation for StudyLink counsellors and COs.",
-    version="1.0.0",
+    version="1.0.1",
 )
 
 # CORS — allows the Netlify frontend to call this API
