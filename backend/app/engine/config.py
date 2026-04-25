@@ -156,17 +156,17 @@ class BonusConfig:
         if not r or not r.active: return None
         if category and r.category.upper() != category.upper(): return None
         return r
-    
+
     def resolve_service_code(self, text: str, category: str = "") -> Optional[str]:
         """
         Resolve a free-text service or package name to a canonical service_code.
 
         Two-step resolution:
-        1. Direct code match: 'USA_STANDARD_16TR' → 'USA_STANDARD_16TR'
-        2. Keyword fallback: scans ref_service_fee_rates.keywords (pipe-separated)
-            for a substring match against `text`. Longest keyword wins, so a
-            specific token like '9tr5' beats a generic token like 'standard'
-            when both rows have keywords matching the input.
+          1. Direct code match: 'USA_STANDARD_16TR' → 'USA_STANDARD_16TR'
+          2. Keyword fallback: scans ref_service_fee_rates.keywords (pipe-separated)
+             for a substring match against `text`. Longest keyword wins, so a
+             specific token like '9tr5' beats a generic token like 'standard'
+             when both rows have keywords matching the input.
 
         The category filter scopes resolution to PACKAGE / SERVICE_FEE / CONTRACT.
 
@@ -200,6 +200,7 @@ class BonusConfig:
         for kw, code in candidates:
             if kw in text_lower:
                 return code
+
         return None
 
     def resolve_staff_name(self, crm_name: str) -> str:

@@ -225,6 +225,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         print(f"  DEBUG {c.contract_id}: after_priority={c.bonus_enrolled:,}")
     _apply_advance_offset(c, sr)
 
+
 def _apply_package(c: CaseRecord, is_counsellor: bool,
                    cfg: BonusConfig, sr: StatusRule) -> None:
     """Applies package bonus. For current-enrolled, applies 50% split."""
@@ -245,6 +246,7 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
                 c.note_enrolled = (
                     c.note_enrolled + f" | Package {c.package_type}: +{amt:,.0f}"
                 ).strip(" | ")
+
 
 def _apply_priority(c: CaseRecord, cfg: BonusConfig) -> None:
     if c.bonus_enrolled <= 0: return
