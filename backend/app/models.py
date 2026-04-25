@@ -573,3 +573,112 @@ class ContractBonus(Base):
     note            = Column(String(300))
     is_active       = Column(Boolean, default=True)
     updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# =============================================================================
+# REVIEW WORKFLOW TABLES (replaces SQLite tables previously in routers/reports.py)
+# =============================================================================
+# These three tables drive the upload → review → submit → approve UI flow.
+# Tables are auto-created by Base.metadata.create_all() in main.py at startup.
+# Distinct names from `runs` / `cases` to avoid collisions with the existing
+# upload pipeline; future work could consolidate.
+
+class BonusReport(Base):
+    """
+    bonus_reports — one row per uploaded review (was the SQLite `reports` table).
+    Uses a hex-token primary key so URLs like /review/aa83a51d4e31ff9b are not
+    enumerable by ID.
+    """
+    __tablename__ = "bonus_reports"
+    id           = Column(String(20), primary_key=True)   # secrets.token_hex(8)
+    staff_name   = Column(String(100), nullable=False, index=True)
+    month        = Column(Integer, nullable=False)
+    year         = Column(Integer, nullable=False)
+    office       = Column(String(10), nullable=False)
+    status       = Column(String(20), default="pending")
+    uploaded_by  = Column(String(100))
+    uploaded_at  = Column(DateTime, default=datetime.utcnow)
+    approved_by  = Column(String(100))
+    approved_at  = Column(DateTime)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    notes        = Column(Text)
+    target       = Column(Integer, default=0)
+    enrolled     = Column(Integer, default=0)
+    tier         = Column(String(20))
+    engine_total = Column(Integer, default=0)
+    manual_total = Column(Integer, default=0)
+    gap          = Column(Integer, default=0)
+    base_rate    = Column(Integer, default=0)
+    cases = relationship("BonusReportCase", back_populates="report",
+                         cascade="all, delete-orphan")
+
+
+class BonusReportCase(Base):
+    """
+    bonus_report_cases — one row per case in a review (was SQLite `report_cases`).
+    Mirrors the engine's CaseRecord shape; persisted after upload and editable
+    by Bonus Admin via the field-edit endpoint.
+    """
+    __tablename__ = "bonus_report_cases"
+    id                 = Column(String(50), primary_key=True)
+    report_id          = Column(String(20), ForeignKey("bonus_reports.id"),
+                                nullable=False, index=True)
+    contract_id        = Column(String(20))
+    student_name       = Column(String(200))
+    student_id         = Column(String(20))
+    app_status         = Column(String(100))
+    client_type        = Column(String(100))
+    country            = Column(String(100))
+    institution        = Column(String(300))
+    refer_agent        = Column(String(200))
+    course_start       = Column(String(20))   # ISO date string
+    visa_date          = Column(String(20))
+    notes              = Column(Text)
+    institution_type   = Column(String(30))
+    service_fee_type   = Column(String(50))
+    package_type       = Column(String(100))
+    is_vietnam         = Column(Boolean, default=False)
+    is_agent_referred  = Column(Boolean, default=False)
+    office             = Column(String(10))
+    row_type           = Column(String(10), default="BASE")
+    scheme             = Column(String(30))
+    counts_as_enrolled = Column(Boolean, default=False)
+    prior_month_rate   = Column(String(20))
+    deferral           = Column(String(50), default="NONE")
+    handover           = Column(String(5),  default="NO")
+    target_owner       = Column(String(100))
+    targets_name       = Column(String(100))
+    presales_agent     = Column(String(100), default="NONE")
+    incentive          = Column(Integer, default=0)
+    group_agent_name   = Column(String(100))
+    case_transition    = Column(String(5), default="NO")
+    bonus_enrolled     = Column(Integer, default=0)
+    bonus_priority     = Column(Integer, default=0)
+    note_enrolled      = Column(Text)
+    note_enrolled_2    = Column(Text)
+    note_priority      = Column(Text)
+    note_priority_2    = Column(Text)
+    gap                = Column(Integer, default=0)
+    section            = Column(String(20))
+    report = relationship("BonusReport", back_populates="cases")
+    __table_args__ = (
+        UniqueConstraint('report_id', 'contract_id', name='uq_bonus_report_contract'),
+    )
+
+
+class BonusFieldChange(Base):
+    """
+    bonus_field_changes — audit log of every edit to a case field (was SQLite
+    `field_changes`). Append-only; never updated or deleted.
+    """
+    __tablename__ = "bonus_field_changes"
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    report_id   = Column(String(20), nullable=False, index=True)
+    case_id     = Column(String(50), nullable=False)
+    field_name  = Column(String(100), nullable=False)
+    field_label = Column(String(100))
+    old_value   = Column(Text)
+    new_value   = Column(Text)
+    comment     = Column(Text)
+    changed_by  = Column(String(100), nullable=False)
+    changed_at  = Column(DateTime, default=datetime.utcnow)

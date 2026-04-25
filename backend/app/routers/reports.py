@@ -1,14 +1,19 @@
 """
 backend/app/routers/reports.py
-Router supporting the full UI workflow:
-  GET   /reports/                                  — list all reports (dashboard queue)
+
+Review workflow router. Backed by PostgreSQL via SQLAlchemy ORM.
+(Replaces the prior SQLite-backed implementation. Tables auto-created at
+startup by main.py's Base.metadata.create_all() on first deploy.)
+
+Endpoints:
+  GET   /reports/                                  — list all reports
   GET   /reports/{id}                              — single report metadata
   POST  /reports/upload                            — upload CRM file → engine → cases stored
   GET   /reports/{id}/cases                        — all cases for review table
   GET   /reports/{id}/trail                        — full field-change audit log
   PATCH /reports/{id}/cases/{cid}/fields/{field}   — edit one field (with mandatory comment)
   POST  /reports/{id}/submit                       — Bonus Admin submits for manager approval
-  POST  /reports/{id}/approve                      — Manager/Admin approves → calculation triggered
+  POST  /reports/{id}/approve                      — Manager/Admin approves
   POST  /reports/{id}/return                       — Manager returns for revision
   GET   /reports/{id}/bonus-report                 — final Báo cáo data
   GET   /reports/{id}/pdf                          — download PDF
@@ -18,122 +23,45 @@ Router supporting the full UI workflow:
 import io
 import os
 import secrets
-import sqlite3
+import tempfile
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from .auth import get_current_user
-from ..models import User
+from ..models import (
+    User,
+    BonusReport,
+    BonusReportCase,
+    BonusFieldChange,
+)
 from ..database import get_db
 
 ENGINE_AVAILABLE = False
 try:
-    from ..engine.config import load_config
-    from ..engine.input import parse_crm_report
+    from ..engine.config   import load_config
+    from ..engine.input    import parse_crm_report
     from ..engine.classify import classify_cases
-    from ..engine.calc import calculate_bonuses
+    from ..engine.calc     import calculate_bonuses
     ENGINE_AVAILABLE = True
 except ImportError:
     pass
 
-DB_PATH = os.environ.get("DB_PATH", "bonusengine.db")
-
-def get_sqlite():
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
-
-
-def _ensure_schema():
-    with get_sqlite() as conn:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id           TEXT PRIMARY KEY,
-            staff_name   TEXT NOT NULL,
-            month        INTEGER NOT NULL,
-            year         INTEGER NOT NULL,
-            office       TEXT NOT NULL,
-            status       TEXT DEFAULT 'pending',
-            uploaded_by  TEXT,
-            uploaded_at  TEXT DEFAULT (datetime('now')),
-            approved_by  TEXT,
-            approved_at  TEXT,
-            updated_at   TEXT DEFAULT (datetime('now')),
-            notes        TEXT,
-            target       INTEGER,
-            enrolled     INTEGER,
-            tier         TEXT,
-            engine_total INTEGER DEFAULT 0,
-            manual_total INTEGER DEFAULT 0,
-            gap          INTEGER DEFAULT 0,
-            base_rate    INTEGER DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS report_cases (
-            id                  TEXT PRIMARY KEY,
-            report_id           TEXT NOT NULL REFERENCES reports(id),
-            contract_id         TEXT,
-            student_name        TEXT,
-            student_id          TEXT,
-            app_status          TEXT,
-            client_type         TEXT,
-            country             TEXT,
-            institution         TEXT,
-            refer_agent         TEXT,
-            course_start        TEXT,
-            visa_date           TEXT,
-            notes               TEXT,
-            institution_type    TEXT,
-            service_fee_type    TEXT,
-            package_type        TEXT,
-            is_vietnam          INTEGER DEFAULT 0,
-            is_agent_referred   INTEGER DEFAULT 0,
-            office              TEXT,
-            row_type            TEXT DEFAULT 'BASE',
-            scheme              TEXT,
-            counts_as_enrolled  INTEGER DEFAULT 0,
-            prior_month_rate    TEXT,
-            deferral            TEXT DEFAULT 'NONE',
-            handover            TEXT DEFAULT 'NO',
-            target_owner        TEXT,
-            bonus_enrolled      INTEGER DEFAULT 0,
-            bonus_priority      INTEGER DEFAULT 0,
-            note_enrolled       TEXT,
-            note_enrolled_2     TEXT,
-            note_priority       TEXT,
-            gap                 INTEGER DEFAULT 0,
-            section             TEXT,
-            UNIQUE(report_id, contract_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS field_changes (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_id   TEXT NOT NULL,
-            case_id     TEXT NOT NULL,
-            field_name  TEXT NOT NULL,
-            field_label TEXT,
-            old_value   TEXT,
-            new_value   TEXT,
-            comment     TEXT,
-            changed_by  TEXT NOT NULL,
-            changed_at  TEXT DEFAULT (datetime('now'))
-        );
-        """)
-
-_ensure_schema()
 
 router = APIRouter()
 
+
+# ── Edit policy ──────────────────────────────────────────────────────────────
 EDITABLE_FIELDS = {
     "institution_type", "service_fee_type", "package_type",
     "office", "row_type", "scheme", "note_enrolled",
     "prior_month_rate", "deferral", "handover", "target_owner",
+    "targets_name", "case_transition", "presales_agent", "incentive",
+    "group_agent_name",
 }
 ENGINE_FIELDS = {
     "institution_type", "service_fee_type", "package_type",
@@ -141,30 +69,127 @@ ENGINE_FIELDS = {
 }
 
 
+# ── Serialisation helpers (ORM row → JSON-ready dict) ────────────────────────
+def _report_to_dict(r: BonusReport, case_count: int = None) -> Dict[str, Any]:
+    """Serialise BonusReport for API response. Includes case_count when supplied."""
+    d = {
+        "id":           r.id,
+        "staff_name":   r.staff_name,
+        "month":        r.month,
+        "year":         r.year,
+        "office":       r.office,
+        "status":       r.status,
+        "uploaded_by":  r.uploaded_by,
+        "uploaded_at":  r.uploaded_at.isoformat() if r.uploaded_at else None,
+        "approved_by":  r.approved_by,
+        "approved_at":  r.approved_at.isoformat() if r.approved_at else None,
+        "updated_at":   r.updated_at.isoformat()  if r.updated_at  else None,
+        "notes":        r.notes,
+        "target":       r.target,
+        "enrolled":     r.enrolled,
+        "tier":         r.tier,
+        "engine_total": r.engine_total,
+        "manual_total": r.manual_total,
+        "gap":          r.gap,
+        "base_rate":    r.base_rate,
+    }
+    if case_count is not None:
+        d["case_count"] = case_count
+    return d
+
+
+def _case_to_dict(c: BonusReportCase) -> Dict[str, Any]:
+    return {
+        "id":                 c.id,
+        "report_id":          c.report_id,
+        "contract_id":        c.contract_id,
+        "student_name":       c.student_name,
+        "student_id":         c.student_id,
+        "app_status":         c.app_status,
+        "client_type":        c.client_type,
+        "country":            c.country,
+        "institution":        c.institution,
+        "refer_agent":        c.refer_agent,
+        "course_start":       c.course_start,
+        "visa_date":          c.visa_date,
+        "notes":              c.notes,
+        "institution_type":   c.institution_type,
+        "service_fee_type":   c.service_fee_type,
+        "package_type":       c.package_type,
+        "is_vietnam":         int(bool(c.is_vietnam)),
+        "is_agent_referred":  int(bool(c.is_agent_referred)),
+        "office":             c.office,
+        "row_type":           c.row_type,
+        "scheme":             c.scheme,
+        "counts_as_enrolled": int(bool(c.counts_as_enrolled)),
+        "prior_month_rate":   c.prior_month_rate,
+        "deferral":           c.deferral,
+        "handover":           c.handover,
+        "target_owner":       c.target_owner,
+        "targets_name":       c.targets_name,
+        "presales_agent":     c.presales_agent,
+        "incentive":          c.incentive,
+        "group_agent_name":   c.group_agent_name,
+        "case_transition":    c.case_transition,
+        "bonus_enrolled":     c.bonus_enrolled,
+        "bonus_priority":     c.bonus_priority,
+        "note_enrolled":      c.note_enrolled,
+        "note_enrolled_2":    c.note_enrolled_2,
+        "note_priority":      c.note_priority,
+        "note_priority_2":    c.note_priority_2,
+        "gap":                c.gap,
+        "section":            c.section,
+    }
+
+
+def _trail_to_dict(t: BonusFieldChange) -> Dict[str, Any]:
+    return {
+        "id":          t.id,
+        "report_id":   t.report_id,
+        "case_id":     t.case_id,
+        "field_name":  t.field_name,
+        "field_label": t.field_label,
+        "old_value":   t.old_value,
+        "new_value":   t.new_value,
+        "comment":     t.comment,
+        "changed_by":  t.changed_by,
+        "changed_at":  t.changed_at.isoformat() if t.changed_at else None,
+    }
+
+
+# ── List / get reports ───────────────────────────────────────────────────────
 @router.get("/")
-def list_reports(current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        rows = conn.execute("""
-            SELECT r.*, COUNT(c.id) AS case_count
-            FROM reports r
-            LEFT JOIN report_cases c ON c.report_id = r.id
-            GROUP BY r.id
-            ORDER BY r.uploaded_at DESC
-        """).fetchall()
-    return [dict(r) for r in rows]
+def list_reports(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all reports with case counts, newest first."""
+    rows = (
+        db.query(
+            BonusReport,
+            func.count(BonusReportCase.id).label("case_count"),
+        )
+        .outerjoin(BonusReportCase, BonusReportCase.report_id == BonusReport.id)
+        .group_by(BonusReport.id)
+        .order_by(desc(BonusReport.uploaded_at))
+        .all()
+    )
+    return [_report_to_dict(r, case_count=cc) for (r, cc) in rows]
 
 
 @router.get("/{report_id}")
-def get_report(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        row = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (report_id,)
-        ).fetchone()
-    if not row:
+def get_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    r = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not r:
         raise HTTPException(404, "Report not found")
-    return dict(row)
+    return _report_to_dict(r)
 
 
+# ── Upload + run engine ──────────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_report(
     file:       UploadFile = File(...),
@@ -178,48 +203,78 @@ async def upload_report(
 ):
     content   = await file.read()
     report_id = secrets.token_hex(8)
-    import tempfile
-    tmp_path = os.path.join(tempfile.gettempdir(), f"{report_id}_{file.filename}")
-
+    tmp_path  = os.path.join(tempfile.gettempdir(),
+                             f"{report_id}_{file.filename}")
     with open(tmp_path, "wb") as f:
         f.write(content)
 
-    parsed_cases = []
-    target, tier, enrolled, engine_total = 13, None, 0, 0
+    parsed_cases: List[Dict[str, Any]] = []
+    target, tier, enrolled, engine_total = 0, None, 0, 0
 
     if ENGINE_AVAILABLE:
         try:
-            # Load config from PostgreSQL — no xlsm file needed
-            cfg = load_config(db)
-            raw_cases, _  = parse_crm_report(tmp_path, cfg)
-            classified    = classify_cases(raw_cases, cfg, staff_name, year, month, {})
+            cfg          = load_config(db)
+            raw_cases, _ = parse_crm_report(tmp_path, cfg)
+            classified   = classify_cases(raw_cases, cfg, staff_name, year, month, {})
             calculated, tier, tgt, enr = calculate_bonuses(
                 classified, staff_name, year, month, cfg)
             target, enrolled = tgt, enr
 
+            from ..engine.constants import (
+                SCHEME_HN_DIRECT, SCHEME_CO_SUB, OFFICE_HN, OFFICE_DN,
+            )
+            base_scheme = cfg.get_staff_scheme(staff_name)
+
             for c in calculated:
+                # counts_as_enrolled lives on the StatusRule, not on CaseRecord.
+                status_rule    = cfg.get_status_rule(c.app_status)
+                counts_enrolled = bool(status_rule.counts_as_enrolled)
+
+                # case_scheme is computed inside calc.py per case but never
+                # stored on c. Recompute the same way for persistence.
+                case_scheme = (SCHEME_HN_DIRECT
+                               if c.office in (OFFICE_HN, OFFICE_DN)
+                               and base_scheme not in (SCHEME_HN_DIRECT, SCHEME_CO_SUB)
+                               else base_scheme)
+
                 parsed_cases.append({
-                    "id":                f"{report_id}_{c.contract_id}",
-                    "contract_id":       c.contract_id,
-                    "student_name":      getattr(c, "student_name", ""),
-                    "student_id":        getattr(c, "student_id", ""),
-                    "app_status":        c.app_status,
-                    "client_type":       c.client_type,
-                    "country":           c.country,
-                    "institution":       c.institution,
-                    "refer_agent":       getattr(c, "refer_agent", ""),
-                    "institution_type":  c.institution_type,
-                    "service_fee_type":  c.service_fee_type,
-                    "package_type":      c.package_type,
-                    "is_vietnam":        int(c.is_vietnam),
-                    "is_agent_referred": int(c.is_agent_referred),
-                    "office":            getattr(c, "office", office),
-                    "row_type":          getattr(c, "row_type", "BASE"),
-                    "scheme":            getattr(c, "scheme", ""),
-                    "counts_as_enrolled": int(getattr(c, "counts_as_enrolled", False)),
-                    "bonus_enrolled":    c.bonus_enrolled,
-                    "note_enrolled":     c.note_enrolled,
-                    "section":           "enrolled" if getattr(c, "counts_as_enrolled", False) else "closed",
+                    "id":                 f"{report_id}_{c.contract_id}",
+                    "contract_id":        c.contract_id,
+                    "student_name":       c.student_name,
+                    "student_id":         c.student_id,
+                    "app_status":         c.app_status,
+                    "client_type":        c.client_type,
+                    "country":            c.country,
+                    "institution":        c.institution,
+                    "refer_agent":        c.agent,            # CaseRecord field is `agent`
+                    "course_start":       c.course_start.isoformat() if c.course_start else "",
+                    "visa_date":          c.visa_date.isoformat()    if c.visa_date    else "",
+                    "notes":              c.notes,
+                    "institution_type":   c.institution_type,
+                    "service_fee_type":   c.service_fee_type,
+                    "package_type":       c.package_type,
+                    "is_vietnam":         bool(c.is_vietnam),
+                    "is_agent_referred":  bool(c.is_agent_referred),
+                    "office":             c.office or office,
+                    "row_type":           c.row_type,
+                    "scheme":             case_scheme,
+                    "counts_as_enrolled": counts_enrolled,
+                    "prior_month_rate":   str(c.prior_month_rate) if c.prior_month_rate else "",
+                    "deferral":           c.deferral,
+                    "handover":           c.handover,
+                    "target_owner":       c.target_owner,
+                    "targets_name":       c.targets_name,
+                    "presales_agent":     c.presales_agent,
+                    "incentive":          c.incentive,
+                    "group_agent_name":   c.group_agent_name,
+                    "case_transition":    c.case_transition,
+                    "bonus_enrolled":     c.bonus_enrolled,
+                    "bonus_priority":     c.bonus_priority,
+                    "note_enrolled":      c.note_enrolled,
+                    "note_enrolled_2":    c.note_enrolled2,
+                    "note_priority":      c.note_priority,
+                    "note_priority_2":    c.note_priority2,
+                    "section":            "enrolled" if counts_enrolled else "closed",
                 })
             print(f"[UPLOAD DEBUG] Cases from engine: {len(parsed_cases)}")
             engine_total = sum(c.get("bonus_enrolled", 0) for c in parsed_cases)
@@ -236,41 +291,74 @@ async def upload_report(
 
     uploader = current_user.full_name or current_user.username
 
-    with get_sqlite() as conn:
-        conn.execute("""
-            INSERT INTO reports
-              (id, staff_name, month, year, office, status, uploaded_by,
-               notes, target, enrolled, tier, engine_total)
-            VALUES (?, ?, ?, ?, ?, 'in_review', ?, ?, ?, ?, ?, ?)
-        """, (report_id, staff_name, month, year, office,
-              uploader, notes, target, enrolled, tier, engine_total))
+    # ── Persist via ORM ──────────────────────────────────────────────────────
+    report = BonusReport(
+        id           = report_id,
+        staff_name   = staff_name,
+        month        = month,
+        year         = year,
+        office       = office,
+        status       = "in_review",
+        uploaded_by  = uploader,
+        notes        = notes,
+        target       = target,
+        enrolled     = enrolled,
+        tier         = tier,
+        engine_total = engine_total,
+    )
+    db.add(report)
 
-        for c in parsed_cases:
-            conn.execute("""
-                INSERT OR REPLACE INTO report_cases
-                  (id, report_id, contract_id, student_name, student_id,
-                   app_status, client_type, country, institution, refer_agent,
-                   institution_type, service_fee_type, package_type,
-                   is_vietnam, is_agent_referred, office, row_type, scheme,
-                   counts_as_enrolled, bonus_enrolled, note_enrolled, section)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                c["id"], report_id, c["contract_id"], c["student_name"], c.get("student_id", ""),
-                c["app_status"], c.get("client_type", ""), c.get("country", ""),
-                c.get("institution", ""), c.get("refer_agent", ""),
-                c.get("institution_type", ""), c.get("service_fee_type", ""),
-                c.get("package_type", ""), c.get("is_vietnam", 0),
-                c.get("is_agent_referred", 0), c.get("office", office),
-                c.get("row_type", "BASE"), c.get("scheme", ""),
-                c.get("counts_as_enrolled", 0), c.get("bonus_enrolled", 0),
-                c.get("note_enrolled", ""), c.get("section", "closed"),
-            ))
-        conn.commit()
+    for cdata in parsed_cases:
+        case = BonusReportCase(
+            id                 = cdata["id"],
+            report_id          = report_id,
+            contract_id        = cdata["contract_id"],
+            student_name       = cdata["student_name"],
+            student_id         = cdata["student_id"],
+            app_status         = cdata["app_status"],
+            client_type        = cdata["client_type"],
+            country            = cdata["country"],
+            institution        = cdata["institution"],
+            refer_agent        = cdata["refer_agent"],
+            course_start       = cdata["course_start"],
+            visa_date          = cdata["visa_date"],
+            notes              = cdata["notes"],
+            institution_type   = cdata["institution_type"],
+            service_fee_type   = cdata["service_fee_type"],
+            package_type       = cdata["package_type"],
+            is_vietnam         = cdata["is_vietnam"],
+            is_agent_referred  = cdata["is_agent_referred"],
+            office             = cdata["office"],
+            row_type           = cdata["row_type"],
+            scheme             = cdata["scheme"],
+            counts_as_enrolled = cdata["counts_as_enrolled"],
+            prior_month_rate   = cdata["prior_month_rate"],
+            deferral           = cdata["deferral"],
+            handover           = cdata["handover"],
+            target_owner       = cdata["target_owner"],
+            targets_name       = cdata["targets_name"],
+            presales_agent     = cdata["presales_agent"],
+            incentive          = cdata["incentive"],
+            group_agent_name   = cdata["group_agent_name"],
+            case_transition    = cdata["case_transition"],
+            bonus_enrolled     = cdata["bonus_enrolled"],
+            bonus_priority     = cdata["bonus_priority"],
+            note_enrolled      = cdata["note_enrolled"],
+            note_enrolled_2    = cdata["note_enrolled_2"],
+            note_priority      = cdata["note_priority"],
+            note_priority_2    = cdata["note_priority_2"],
+            section            = cdata["section"],
+        )
+        db.add(case)
 
-        saved = conn.execute(
-            "SELECT COUNT(*) FROM report_cases WHERE report_id=?", (report_id,)
-        ).fetchone()[0]
-        print(f"[UPLOAD DEBUG] Cases saved to DB: {saved}")
+    db.commit()
+
+    saved = (
+        db.query(func.count(BonusReportCase.id))
+        .filter(BonusReportCase.report_id == report_id)
+        .scalar()
+    )
+    print(f"[UPLOAD DEBUG] Cases saved to DB: {saved}")
 
     return {
         "id":               report_id,
@@ -283,32 +371,46 @@ async def upload_report(
     }
 
 
+# ── Cases for review table ───────────────────────────────────────────────────
 @router.get("/{report_id}/cases")
-def get_cases(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        rows = conn.execute(
-            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
-            (report_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+def get_cases(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(BonusReportCase)
+        .filter(BonusReportCase.report_id == report_id)
+        .order_by(BonusReportCase.id)
+        .all()
+    )
+    return [_case_to_dict(c) for c in rows]
 
 
+# ── Audit trail ──────────────────────────────────────────────────────────────
 @router.get("/{report_id}/trail")
-def get_trail(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        rows = conn.execute(
-            "SELECT * FROM field_changes WHERE report_id = ? ORDER BY changed_at DESC",
-            (report_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+def get_trail(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rows = (
+        db.query(BonusFieldChange)
+        .filter(BonusFieldChange.report_id == report_id)
+        .order_by(desc(BonusFieldChange.changed_at))
+        .all()
+    )
+    return [_trail_to_dict(t) for t in rows]
 
 
+# ── Edit a single case field ─────────────────────────────────────────────────
 @router.patch("/{report_id}/cases/{case_id}/fields/{field}")
 def update_field(
     report_id: str,
     case_id:   str,
     field:     str,
     body:      dict,
+    db:        Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     if field not in EDITABLE_FIELDS:
@@ -322,71 +424,74 @@ def update_field(
             422, "A comment is required when overriding an engine-suggested value"
         )
 
-    with get_sqlite() as conn:
-        row = conn.execute(
-            f"SELECT {field} FROM report_cases WHERE id = ? AND report_id = ?",
-            (case_id, report_id)
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Case not found")
-
-        old_value = dict(row)[field]
-
-        conn.execute(
-            f"UPDATE report_cases SET {field} = ? WHERE id = ? AND report_id = ?",
-            (new_value, case_id, report_id)
+    case = (
+        db.query(BonusReportCase)
+        .filter(
+            BonusReportCase.id        == case_id,
+            BonusReportCase.report_id == report_id,
         )
-        conn.execute("""
-            INSERT INTO field_changes
-              (report_id, case_id, field_name, field_label,
-               old_value, new_value, comment, changed_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            report_id, case_id, field,
-            field.replace("_", " ").title(),
-            str(old_value) if old_value is not None else "",
-            str(new_value),
-            comment,
-            current_user.full_name or current_user.username,
-        ))
-        conn.execute(
-            "UPDATE reports SET updated_at = datetime('now') WHERE id = ?",
-            (report_id,)
-        )
-        conn.commit()
+        .first()
+    )
+    if not case:
+        raise HTTPException(404, "Case not found")
 
+    old_value = getattr(case, field)
+    setattr(case, field, new_value)
+
+    db.add(BonusFieldChange(
+        report_id   = report_id,
+        case_id     = case_id,
+        field_name  = field,
+        field_label = field.replace("_", " ").title(),
+        old_value   = str(old_value) if old_value is not None else "",
+        new_value   = str(new_value),
+        comment     = comment,
+        changed_by  = current_user.full_name or current_user.username,
+    ))
+
+    # touch the parent report's updated_at
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if rep:
+        rep.updated_at = datetime.utcnow()
+
+    db.commit()
     return {"ok": True, "field": field, "new_value": new_value}
 
 
+# ── State transitions ────────────────────────────────────────────────────────
 @router.post("/{report_id}/submit")
-def submit_report(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        conn.execute(
-            "UPDATE reports SET status = 'submitted', updated_at = datetime('now') WHERE id = ?",
-            (report_id,)
-        )
-        conn.commit()
+def submit_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
+        raise HTTPException(404, "Report not found")
+    rep.status     = "submitted"
+    rep.updated_at = datetime.utcnow()
+    db.commit()
     return {"ok": True, "status": "submitted"}
 
 
 @router.post("/{report_id}/approve")
-def approve_report(report_id: str, current_user: User = Depends(get_current_user)):
+def approve_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if not current_user.is_admin:
         raise HTTPException(403, "Only administrators can approve reports")
 
-    approver = current_user.full_name or current_user.username
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
+        raise HTTPException(404, "Report not found")
 
-    with get_sqlite() as conn:
-        conn.execute("""
-            UPDATE reports
-            SET status      = 'approved',
-                approved_by = ?,
-                approved_at = datetime('now'),
-                updated_at  = datetime('now')
-            WHERE id = ?
-        """, (approver, report_id))
-        conn.commit()
-
+    rep.status      = "approved"
+    rep.approved_by = current_user.full_name or current_user.username
+    rep.approved_at = datetime.utcnow()
+    rep.updated_at  = datetime.utcnow()
+    db.commit()
     return {"ok": True, "status": "approved"}
 
 
@@ -394,60 +499,72 @@ def approve_report(report_id: str, current_user: User = Depends(get_current_user
 def return_report(
     report_id: str,
     body: dict,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
+        raise HTTPException(404, "Report not found")
+
     comment = (body.get("comment") or "").strip()
 
-    with get_sqlite() as conn:
-        conn.execute(
-            "UPDATE reports SET status = 'returned', updated_at = datetime('now') WHERE id = ?",
-            (report_id,)
-        )
-        if comment:
-            conn.execute("""
-                INSERT INTO field_changes
-                  (report_id, case_id, field_name, field_label,
-                   old_value, new_value, comment, changed_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                report_id, "REPORT", "status", "Report Status",
-                "submitted", "returned", comment,
-                current_user.full_name or current_user.username,
-            ))
-        conn.commit()
+    rep.status     = "returned"
+    rep.updated_at = datetime.utcnow()
 
+    if comment:
+        db.add(BonusFieldChange(
+            report_id   = report_id,
+            case_id     = "REPORT",
+            field_name  = "status",
+            field_label = "Report Status",
+            old_value   = "submitted",
+            new_value   = "returned",
+            comment     = comment,
+            changed_by  = current_user.full_name or current_user.username,
+        ))
+
+    db.commit()
     return {"ok": True, "status": "returned"}
 
 
+# ── Final báo cáo ────────────────────────────────────────────────────────────
 @router.get("/{report_id}/bonus-report")
-def get_bonus_report(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        r = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (report_id,)
-        ).fetchone()
-        cases = conn.execute(
-            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
-            (report_id,)
-        ).fetchall()
-    if not r:
+def get_bonus_report(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
         raise HTTPException(404, "Report not found")
-    return {**dict(r), "cases": [dict(c) for c in cases]}
+    cases = (
+        db.query(BonusReportCase)
+        .filter(BonusReportCase.report_id == report_id)
+        .order_by(BonusReportCase.id)
+        .all()
+    )
+    return {**_report_to_dict(rep), "cases": [_case_to_dict(c) for c in cases]}
 
 
+# ── PDF download ─────────────────────────────────────────────────────────────
 @router.get("/{report_id}/pdf")
-def download_pdf(report_id: str, current_user: User = Depends(get_current_user)):
-    with get_sqlite() as conn:
-        r = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (report_id,)
-        ).fetchone()
-        cases = conn.execute(
-            "SELECT * FROM report_cases WHERE report_id = ? ORDER BY rowid",
-            (report_id,)
-        ).fetchall()
-    if not r:
+def download_pdf(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
         raise HTTPException(404, "Report not found")
+    cases = (
+        db.query(BonusReportCase)
+        .filter(BonusReportCase.report_id == report_id)
+        .order_by(BonusReportCase.id)
+        .all()
+    )
 
-    r, cases = dict(r), [dict(c) for c in cases]
+    r     = _report_to_dict(rep)
+    cases = [_case_to_dict(c) for c in cases]
 
     try:
         from reportlab.lib import colors
@@ -472,7 +589,7 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         styles = getSampleStyleSheet()
         note_s = ParagraphStyle("Note", fontSize=8, fontName="Helvetica",
                                 textColor=colors.HexColor("#475569"))
-        h2_s   = ParagraphStyle("H2",   fontSize=11, fontName="Helvetica-Bold",
+        h2_s   = ParagraphStyle("H2", fontSize=11, fontName="Helvetica-Bold",
                                 textColor=NAVY, spaceBefore=12, spaceAfter=6)
 
         enrolled = [c for c in cases if c.get("section") == "enrolled"]
@@ -638,6 +755,7 @@ def download_pdf(report_id: str, current_user: User = Depends(get_current_user))
         )
 
 
+# ── Email stub ───────────────────────────────────────────────────────────────
 @router.post("/{report_id}/email")
 def send_email(
     report_id: str,

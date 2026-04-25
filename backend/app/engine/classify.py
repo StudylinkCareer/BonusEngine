@@ -173,11 +173,21 @@ def classify_cases(
         if "target_owner" in ov:
             c.target_owner = ov["target_owner"]
 
-        # Targets name
-        c.targets_name = ov.get("targets_name", canonical_staff)
+        # Targets name — V2 input may already have set this; respect that
+        if "targets_name" in ov:
+            c.targets_name = ov["targets_name"]
+        elif c.targets_name:
+            pass  # V2 input already set this value
+        else:
+            c.targets_name = canonical_staff
 
-        # Deferral
-        c.deferral = ov.get("deferral", DEFERRAL_NONE)
+        # Deferral — V2 input may already have set this; respect that
+        if "deferral" in ov:
+            c.deferral = ov["deferral"]
+        elif c.deferral and c.deferral.upper() not in (DEFERRAL_NONE, ""):
+            pass  # V2 input already set this value
+        else:
+            c.deferral = DEFERRAL_NONE
 
         # Cross-office: if case office != staff primary office, mark for HN rate
         if c.office == OFFICE_HN and canonical_staff:

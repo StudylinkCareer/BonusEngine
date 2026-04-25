@@ -47,6 +47,31 @@ _HEADER_ALIASES = {
     "notes": "notes",
     "bonus enrolled": "bonus",       # Manual report output
     "bonus  enrolled": "bonus",
+    # ── V2 (30-column FIXED format) extension columns ────────────────────────
+    # Present in V2 input files only; absent from legacy V1 reports.
+    # When missing, the existing classify.py inference pipeline runs unchanged.
+    "pre-sales agent":          "presales_agent",
+    "presales agent":           "presales_agent",
+    "customer incentive (vnd)": "incentive",
+    "customer incentive":       "incentive",
+    "incentive (vnd)":          "incentive",
+    "service fee type":         "service_fee_type",
+    "deferral / waiver":        "deferral",
+    "deferral/waiver":          "deferral",
+    "deferral":                 "deferral",
+    "package type":             "package_type",
+    "office override":          "office_override",
+    "handover":                 "handover",
+    "target owner":             "target_owner",
+    "case transition":          "case_transition",
+    "prior month rate (vnd)":   "prior_month_rate",
+    "prior month rate":         "prior_month_rate",
+    "institution type":         "institution_type",
+    "group/master agent name":  "group_agent_name",
+    "group / master agent name":"group_agent_name",
+    "group/master agent":       "group_agent_name",
+    "targets sheet name":       "targets_name",
+    "targets sheet":            "targets_name",
 }
 
 
@@ -72,6 +97,24 @@ def _get_date(row, col_map, key) -> Optional[date]:
     idx = col_map.get(key)
     if idx is None or idx >= len(row): return None
     return _d(row[idx])
+
+
+def _v2_str(row, col_map, key, default: str = "") -> str:
+    """Read a V2 column. Treats blank/'NONE' as 'not set' and returns default."""
+    idx = col_map.get(key)
+    if idx is None or idx >= len(row):
+        return default
+    val = _s(row[idx])
+    if not val or val.upper() in ("NONE", ""):
+        return default
+    return val
+
+def _v2_int(row, col_map, key, default: int = 0) -> int:
+    """Read a V2 numeric column."""
+    idx = col_map.get(key)
+    if idx is None or idx >= len(row):
+        return default
+    return _i(row[idx])
 
 
 def infer_institution_type(institution: str, system_type: str,
@@ -160,6 +203,30 @@ def parse_crm_report(file_path: str, cfg: BonusConfig
         _sl = ("studylink", "study link", "van phong", "văn phòng")
         c.is_agent_referred = (bool(c.agent) and len(c.agent) > 2 and
                                not any(x in agent_lower for x in _sl))
+
+        # ── V2 (30-column FIXED format) field population ─────────────────────
+        # When V2 columns are present in the file, their explicit values
+        # override the engine's inferred values. When V2 columns are absent
+        # (legacy V1 17-column file), these calls are no-ops and the existing
+        # classify.py inference pipeline runs unchanged downstream.
+        c.presales_agent  = _v2_str(row, col_map, "presales_agent", c.presales_agent)
+        c.incentive       = _v2_int(row, col_map, "incentive", c.incentive)
+        c.service_fee_type = _v2_str(row, col_map, "service_fee_type", c.service_fee_type)
+        c.deferral        = _v2_str(row, col_map, "deferral", c.deferral)
+        c.package_type    = _v2_str(row, col_map, "package_type", c.package_type)
+        office_override   = _v2_str(row, col_map, "office_override", "")
+        if office_override:
+            c.office = office_override.upper()
+        c.handover        = _v2_str(row, col_map, "handover", c.handover)
+        c.target_owner    = _v2_str(row, col_map, "target_owner", c.target_owner)
+        c.case_transition = _v2_str(row, col_map, "case_transition", c.case_transition)
+        c.prior_month_rate = _v2_int(row, col_map, "prior_month_rate", c.prior_month_rate)
+        inst_type_v2      = _v2_str(row, col_map, "institution_type", "")
+        if inst_type_v2:
+            c.institution_type = inst_type_v2  # V2 explicit value beats inferred
+        c.group_agent_name = _v2_str(row, col_map, "group_agent_name", c.group_agent_name)
+        c.targets_name    = _v2_str(row, col_map, "targets_name", c.targets_name)
+
         cases.append(c)
 
     cases = _dedup(cases, cfg)
