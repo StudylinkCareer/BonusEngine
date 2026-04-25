@@ -22,7 +22,10 @@ const TABLES = [
   { key:"status-rules",     label:"05 — Status Rules & Splits", endpoint:"/reference/status-rules",     download:true,  addable:true,  uploadable:false, editableFields:["coun_pct","co_direct_pct","co_sub_pct","start_date","end_date"],
     columnOrder:["status_value","counts_as_enrolled","coun_pct","co_direct_pct","co_sub_pct","is_carry_over","is_current_enrolled","is_zero_bonus","fees_paid_non_enrolled","requires_visa","dedup_rank","note","is_eligible","requires_enrol","start_date","end_date"] },
   { key:"advance-rules",    label:"Advance Payment Rules",      endpoint:"/reference/advance-rules",    download:true,  addable:true,  uploadable:false, editableFields:["advance_pct","start_date","end_date"] },
-  { key:"service-fee-rates",label:"09 — Service Fee Rates",     endpoint:"/reference/service-fee-rates",download:true,  addable:false, uploadable:false },
+  { key:"service-fee-rates",label:"09 — Service Fee Rates",     endpoint:"/reference/service-fee-rates",download:true,  addable:false, uploadable:false,
+    editableFields:["coun_bonus","co_bonus","is_active","category","applies_to","timing","description","note","keywords"],
+    columnOrder:["service_code","keywords","coun_bonus","co_bonus","is_active","category","applies_to","timing","description","note"],
+    columnLabels:{"service_code":"Service Code (col 19 exact match)","keywords":"Keywords (pipe-separated)","coun_bonus":"Counsellor Bonus (VND)","co_bonus":"Case Officer Bonus (VND)","is_active":"Active","category":"Category","applies_to":"Applies To","timing":"Timing","description":"Description / Source","note":"Notes"} },
   { key:"contract-bonuses", label:"07 — Contract Bonuses",      endpoint:"/reference/contract-bonuses", download:true,  addable:false, uploadable:false },
   // COUNTRIES & TYPES
   { key:"country-codes",    label:"14 — Country Codes",         endpoint:"/reference/country-codes",    download:true,  addable:false, uploadable:false },
@@ -334,7 +337,7 @@ export default function ReferenceTablesPage() {
                   <tr style={{background:"var(--color-background-secondary)"}}>
                     {columns.map(c=>(
                       <th key={c} style={{padding:"9px 12px",textAlign:"left",fontWeight:600,color:"var(--color-text-primary)",borderBottom:"1px solid var(--color-border-tertiary)",whiteSpace:"nowrap",fontSize:11}}>
-                        {c.replace(/_/g," ").toUpperCase()}
+                        {(activeTable.columnLabels?.[c]) || c.replace(/_/g," ").toUpperCase()}
                         {isEditable(c) && <span style={{color:"#7c3aed",marginLeft:4}}>✎</span>}
                       </th>
                     ))}
