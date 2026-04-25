@@ -93,24 +93,28 @@ def migrate():
         conn.commit()
         print("✅ ref_service_fee_rates table ensured")
 
-        # --- Create ref_status_rules if not exists ---
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS ref_status_rules (
-                id SERIAL PRIMARY KEY,
-                status_value VARCHAR(100) UNIQUE NOT NULL,
-                is_eligible BOOLEAN DEFAULT TRUE,
-                counts_as_enrolled BOOLEAN DEFAULT FALSE,
-                coun_pct FLOAT DEFAULT 1.0,
-                co_direct_pct FLOAT DEFAULT 1.0,
-                co_sub_pct FLOAT DEFAULT 1.0,
-                start_date DATE,
-                end_date DATE,
-                is_active BOOLEAN DEFAULT TRUE,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """))
-        conn.commit()
-        print("✅ ref_status_rules table ensured")
+        # --- ref_status_rules: add missing columns ---
+        sr_columns = {
+            "is_carry_over":          "BOOLEAN DEFAULT FALSE",
+            "is_current_enrolled":    "BOOLEAN DEFAULT FALSE",
+            "is_zero_bonus":          "BOOLEAN DEFAULT FALSE",
+            "fees_paid_non_enrolled": "BOOLEAN DEFAULT FALSE",
+            "requires_visa":          "BOOLEAN DEFAULT FALSE",
+            "requires_enrol":         "BOOLEAN DEFAULT FALSE",
+            "dedup_rank":             "INTEGER DEFAULT 0",
+            "conditions":             "TEXT",
+            "triggers":               "TEXT",
+            "note":                   "VARCHAR(300)",
+        }
+        for col, col_type in sr_columns.items():
+            if not column_exists(conn, "ref_status_rules", col):
+                conn.execute(text(
+                    f"ALTER TABLE ref_status_rules ADD COLUMN {col} {col_type}"
+                ))
+                conn.commit()
+                print(f"✅ Added '{col}' column to ref_status_rules")
+            else:
+                print(f"⏭  ref_status_rules.{col} already exists")
 
         print("\n✅ All migrations complete!")
 
