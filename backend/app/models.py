@@ -1,7 +1,7 @@
 # =============================================================================
 # models.py  |  StudyLink Bonus Engine
 # All SQLAlchemy ORM models. Zero hardcoded rates or rules.
-# Every configurable value lives in a DB table with start/end date controls..
+# Every configurable value lives in a DB table with start/end date controls.
 # =============================================================================
 
 from datetime import datetime, date
