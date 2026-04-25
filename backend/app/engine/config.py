@@ -1,6 +1,13 @@
 # =============================================================================
 # config.py  |  StudyLink Bonus Engine
 # Loads ALL configuration from PostgreSQL — zero hardcoded rates or rules.
+#
+# v6.3 compatibility patches applied (Apr 2026):
+#   PATCH 1: get_service_fee accepts optional category filter (2-arg signature)
+#   PATCH 2: base_rates inject flat keys "out_sys_co" / "out_sys_coun" per scheme
+#            (sourced from ref_base_rates rows where tier='OUT_SYS')
+#   PATCH 3: base_rates inject flat key "rmit_vn" for CO_SUB scheme
+#            (sourced from ref_special_rates rate_code='RMIT_VN_SUB')
 # =============================================================================
 
 import json
@@ -107,10 +114,6 @@ class PartnerInstitutionRateObj:
     coun_amount: int = 0
 
 
-# Alias for backward compatibility with calc.py which imports StatusRule
-StatusRule = StatusRuleObj
-
-
 # Backwards-compatible alias — calc.py imports StatusRule from this module
 StatusRule = StatusRuleObj
 
@@ -142,10 +145,17 @@ class BonusConfig:
         return self.status_rules.get(status.strip().lower(),
                StatusRuleObj(status=status, is_zero_bonus=True))
 
-    def get_service_fee(self, code: str) -> Optional[ServiceFeeRuleObj]:
+    def get_service_fee(self, code: str, category: str = "") -> Optional[ServiceFeeRuleObj]:
+        """
+        PATCH 1 (v6.3 compat): optional category filter.
+        Existing 1-arg callers continue to work — category defaults to "" (no filter).
+        v6.3 calc.py uses the 2-arg form to disambiguate SERVICE_FEE vs CONTRACT vs PACKAGE.
+        """
         if not code or code.upper() in ("NONE", ""): return None
         r = self.service_fees.get(code.strip().lower())
-        return r if r and r.active else None
+        if not r or not r.active: return None
+        if category and r.category.upper() != category.upper(): return None
+        return r
 
     def resolve_staff_name(self, crm_name: str) -> str:
         return self.staff_name_map.get(crm_name.strip().lower(), crm_name.strip())
@@ -480,5 +490,28 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
             sort_order=r.sort_order or 100,
         ))
     cfg.advance_rules.sort(key=lambda x: x.sort_order)
+
+    # =========================================================================
+    # v6.3 COMPATIBILITY POST-PROCESSING
+    # Inject flat keys into base_rates so v6.3 calc.py's _get_rates() finds them
+    # alongside the tier dicts. The DB stores these values in different shapes;
+    # calc.py expects them as flat entries inside each scheme's base_rates dict.
+    # =========================================================================
+
+    # PATCH 2: out_sys_co / out_sys_coun from ref_base_rates tier='OUT_SYS'
+    # CO_SUB has no OUT_SYS rows by design — CO_SUB cases never go out-of-system.
+    for scheme, tier_dict in cfg.base_rates.items():
+        out_sys = tier_dict.get("OUT_SYS")
+        if out_sys:
+            tier_dict["out_sys_co"]   = out_sys.get("CO", 0)
+            tier_dict["out_sys_coun"] = out_sys.get("COUN", 0)
+
+    # PATCH 3: rmit_vn for CO_SUB scheme from ref_special_rates rate_code='RMIT_VN_SUB'
+    # Used by calc.py Step 7 when scheme==CO_SUB and country is Vietnam.
+    if SCHEME_CO_SUB in cfg.base_rates:
+        for sr in cfg.special_rates:
+            if sr.rate_code == "RMIT_VN_SUB" and sr.scheme == SCHEME_CO_SUB:
+                cfg.base_rates[SCHEME_CO_SUB]["rmit_vn"] = sr.amount
+                break
 
     return cfg
