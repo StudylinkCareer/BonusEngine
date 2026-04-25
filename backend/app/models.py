@@ -424,7 +424,8 @@ class MasterAgent(Base):
     id         = Column(Integer, primary_key=True, index=True)
     agent_name = Column(String(200), nullable=False, index=True)
     agent_type = Column(String(30))   # MASTER_AGENT | GROUP | DIRECT
-    office     = Column(String(10))
+    triggers_master_agent_rate = Column(Boolean, default=False)
+    notes     = Column(String(300))
     is_active  = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

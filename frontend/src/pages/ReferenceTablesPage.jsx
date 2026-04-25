@@ -10,7 +10,8 @@ const TABLES = [
   { key:"staff-targets",    label:"04 — Staff Targets",         endpoint:"/reference/staff-targets",    download:true,  addable:false, uploadable:true,  pivotView:true },
   // INSTITUTIONS
   { key:"priority-instns",  label:"03 — Priority Institutions", endpoint:"/reference/priority-instns",  download:true,  addable:false, uploadable:false },
-  { key:"master-agents",    label:"11 — Master Agents",         endpoint:"/reference/master-agents",    download:true,  addable:false, uploadable:true },
+  { key:"master-agents",    label:"11 — Master Agents",         endpoint:"/reference/master-agents",    download:true,  addable:false, uploadable:true,
+    columnOrder:["agent_name","agent_type","triggers_master_agent_rate","notes","is_active"] },
   { key:"partner-instns",   label:"Partner Instns (* / **)",    endpoint:"/reference/partner-instns",   download:true,  addable:false, uploadable:false, editableFields:["co_amount","coun_amount","end_date"] },
   // RATES (all editable)
   { key:"base-rates",       label:"02 — Base Bonus Rates",      endpoint:"/reference/base-rates",       download:true,  addable:false, uploadable:false, editableFields:["amount","start_date","end_date"] },
