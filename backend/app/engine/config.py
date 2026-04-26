@@ -414,7 +414,14 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
             co_sub_pct=r.co_sub_pct if hasattr(r,'co_sub_pct') and r.co_sub_pct is not None else 1.0,
             is_carry_over=r.is_carry_over if hasattr(r,'is_carry_over') else False,
             is_current_enrolled=r.is_current_enrolled if hasattr(r,'is_current_enrolled') else False,
-            is_zero_bonus=(not r.is_eligible) if hasattr(r,'is_eligible') else (r.is_zero_bonus if hasattr(r,'is_zero_bonus') else False),
+            # Apr 2026: prefer the explicit is_zero_bonus column from DB.
+            # Legacy code derived this from `not r.is_eligible`, but the two
+            # columns have drifted apart — "Closed - Cancelled" is_eligible=
+            # False yet is_zero_bonus=False (cancelled-with-fee → 400k via
+            # fees-paid path). Trust the explicit column.
+            is_zero_bonus=r.is_zero_bonus if hasattr(r,'is_zero_bonus') else (
+                (not r.is_eligible) if hasattr(r,'is_eligible') else False
+            ),
             fees_paid_non_enrolled=r.fees_paid_non_enrolled if hasattr(r,'fees_paid_non_enrolled') else False,
             is_visa_granted=r.requires_visa if hasattr(r,'requires_visa') else False,
             dedup_rank=r.dedup_rank if hasattr(r,'dedup_rank') else 0,
