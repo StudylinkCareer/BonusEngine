@@ -182,7 +182,13 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled = f"Status: {c.app_status} → 0"; return
 
     # ── STEP 6: Partner case (v6.3 FIX #6: * or ** institution → 400k) ───────
-    if _is_partner_case(c.institution):
+    # Apr 2026: scope tightened — partner haircut applies to fees-paid /
+    # cancelled-with-fee statuses only. For genuinely enrolled cases
+    # (counts_as_enrolled=True), the case falls through to normal tier-based
+    # base rate calculation in Step 7. Without this scope, every enrolled
+    # case at a partner institution was being capped at 400k regardless of
+    # tier, target achievement, or package.
+    if _is_partner_case(c.institution) and not sr.counts_as_enrolled:
         r = rates.get("out_sys_co", 400_000)
         c.bonus_enrolled = r; c.base_rate = r
         c.note_enrolled = f"Partner institution: {r:,.0f}"
