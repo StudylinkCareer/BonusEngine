@@ -39,22 +39,25 @@ _HEADER_ALIASES = {
     "system type": "system",
     "application report status": "status",
     "application  report  status": "status",
+    "application status": "status",                                # v7
     "visa received date": "visa_date", "visa date": "visa_date",
     "institution name": "institution",
     "course start date": "course_start", "course start": "course_start",
     "course status": "course_status",
-    "counsellor name": "counsellor", "case officer name": "co",
+    "counsellor name": "counsellor", "counsellor": "counsellor",   # v7
+    "case officer name": "co", "case officer": "co",               # v7
     "notes": "notes",
     "bonus enrolled": "bonus",       # Manual report output
     "bonus  enrolled": "bonus",
     # ── V2 (30-column FIXED format) extension columns ────────────────────────
-    # Present in V2 input files only; absent from legacy V1 reports.
+    # Present in V2 / v7 input files; absent from legacy V1 reports.
     # When missing, the existing classify.py inference pipeline runs unchanged.
     "pre-sales agent":          "presales_agent",
     "presales agent":           "presales_agent",
     "customer incentive (vnd)": "incentive",
     "customer incentive":       "incentive",
     "incentive (vnd)":          "incentive",
+    "incentive":                "incentive",                       # v7
     "service fee type":         "service_fee_type",
     "deferral / waiver":        "deferral",
     "deferral/waiver":          "deferral",
@@ -66,18 +69,60 @@ _HEADER_ALIASES = {
     "case transition":          "case_transition",
     "prior month rate (vnd)":   "prior_month_rate",
     "prior month rate":         "prior_month_rate",
+    "prior month rate / mgmt override amt":      "prior_month_rate",   # v7
+    "prior month rate or mgmt override amt":     "prior_month_rate",   # v7 alt
+    "prior month rate or\nmgmt override amt":    "prior_month_rate",   # v7 raw newline form
     "institution type":         "institution_type",
     "group/master agent name":  "group_agent_name",
     "group / master agent name":"group_agent_name",
     "group/master agent":       "group_agent_name",
+    "group/agent name":         "group_agent_name",                # v7
+    "group / agent name":       "group_agent_name",                # v7
+    "group/agent":              "group_agent_name",                # v7
     "targets sheet name":       "targets_name",
     "targets sheet":            "targets_name",
+    "targets name":             "targets_name",                    # v7
+    # ── v7 ADDON-row fields (col 31-33) ──────────────────────────────────────
+    "row type":                 "row_type",
+    "row type (base/addon)":    "row_type",
+    "row type\n(base/addon)":   "row_type",
+    "add-on service code":      "addon_code",
+    "add-on service\ncode":     "addon_code",
+    "addon service code":       "addon_code",
+    "add-on code":              "addon_code",
+    "add-on count":             "addon_count",
+    "add-on\ncount":            "addon_count",
+    "addon count":              "addon_count",
 }
+
+
+def _normalise_header(v) -> str:
+    """
+    Convert raw header cell value to a clean lowercase key for alias lookup.
+    v7 template uses cells like '4\\nContract ID\\n[M]' or '17\\nPre-sales Agent\\nNEW'.
+    Steps:
+      1. Lowercase, replace non-breaking spaces.
+      2. Remove a leading column number with optional newline (e.g. '4\\n').
+      3. Strip trailing [M], [C], NEW markers.
+      4. Collapse all whitespace (including newlines) to single spaces, trim.
+    """
+    import re
+    s = _s(v).lower().replace("\xa0", " ")
+    if not s:
+        return s
+    # Strip leading "4\n" or "27\n" etc.
+    s = re.sub(r"^\s*\d+\s*[\n\r]+", "", s)
+    # Strip trailing markers like [M], [C], NEW
+    s = re.sub(r"\s*\[(m|c|m\?|c\?)\]\s*$", "", s)
+    s = re.sub(r"\s*\bnew\b\s*$", "", s)
+    # Collapse all whitespace to single spaces
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def _detect_header(ws) -> Tuple[Optional[int], dict]:
     for i, row in enumerate(ws.iter_rows(max_row=6, values_only=True)):
-        hdrs = [_s(v).lower().replace("\xa0"," ") for v in row]
+        hdrs = [_normalise_header(v) for v in row]
         if "contract id" in hdrs or "no." in hdrs:
             col_map = {}
             for j, h in enumerate(hdrs):
