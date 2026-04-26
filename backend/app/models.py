@@ -528,6 +528,7 @@ class PriorityInstitution(Base):
     direct_target    = Column(Integer, default=0)
     sub_target       = Column(Integer, default=0)
     is_active        = Column(Boolean, default=True)
+    year = Column(Integer, nullable=True)
     updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     aliases = relationship("InstitutionAlias", back_populates="institution",
                            cascade="all, delete-orphan")
