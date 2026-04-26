@@ -180,7 +180,17 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled = f"{c.app_status} → 0 (no fee collected)"; return
 
     # ── STEP 4: Carry-over (v6.3 FIX #8: always 50%) ─────────────────────────
-    if sr.is_carry_over:
+    # Apr 2026: scope tightened — carry-over fires ONLY when the course start
+    # is in a period prior to the current run period. Same-period course start
+    # means both events (enrolment + visa) happened this month, so the case
+    # behaves like a normal "Closed - Visa granted, then enrolled" — full base
+    # rate, no advance offset.
+    same_period_enrol = bool(
+        c.course_start
+        and c.course_start.year == year
+        and c.course_start.month == month
+    )
+    if sr.is_carry_over and not same_period_enrol:
         if c.prior_month_rate <= 0 and scheme == SCHEME_CO_SUB:
             resolved_prior = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
             c.prior_month_rate = rates.get(resolved_prior, rates.get(TIER_UNDER, 700_000))
