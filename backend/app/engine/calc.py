@@ -9,7 +9,7 @@
 #   6. Step 6: partner case (** or * in institution) → 400k
 #   7. Step 7/8: base_rate set AFTER split, BEFORE package
 #   8. Carry-over: always 50% of prior month rate
-#   9. Priority: uses c.base_rate (pre-package), not c.bonus_enrolled
+#   9. Priority: uses c.base_rate (pre-package), not c.bonus_enrolled.
 #
 # Plus: keyword-based package resolution from today's session — _apply_package
 # calls cfg.resolve_service_code() before get_service_fee() so display strings

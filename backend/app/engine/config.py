@@ -7,7 +7,7 @@
 #   PATCH 2: base_rates inject flat keys "out_sys_co" / "out_sys_coun" per scheme
 #            (sourced from ref_base_rates rows where tier='OUT_SYS')
 #   PATCH 3: base_rates inject flat key "rmit_vn" for CO_SUB scheme
-#            (sourced from ref_special_rates rate_code='RMIT_VN_SUB')
+#            (sourced from ref_special_rates rate_code='RMIT_VN_SUB').
 # =============================================================================
 
 import json
