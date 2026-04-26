@@ -154,6 +154,18 @@ def classify_cases(
         # Package
         if "package_type" in ov:
             c.package_type = ov["package_type"]
+        elif c.package_type and c.package_type.upper() not in ("NONE", ""):
+            # Apr 2026: v7 input already provided a package_type, don't let
+            # note-based inference clobber it. This includes the case where
+            # v7 input explicitly set package_type to a real package code
+            # (e.g. AP_STANDARD_PLUS_3TR) — respect it.
+            pass
+        elif c.package_type and c.package_type.upper() == "NONE":
+            # Apr 2026: v7 input explicitly said "NONE" → no package even if
+            # notes mention one. This handles cancelled/refused cases where
+            # the operator knows the fee was NOT retained, and the notes are
+            # just describing what was originally signed.
+            pass
         elif c.service_fee_type in (SVC_NONE, ""):
             pkg = _infer_package(c.notes)
             if pkg:
