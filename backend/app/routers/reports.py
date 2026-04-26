@@ -219,6 +219,8 @@ async def upload_report(
             calculated, tier, tgt, enr = calculate_bonuses(
                 classified, staff_name, year, month, cfg, office=office)
             target, enrolled = tgt, enr
+            print(f"[UPLOAD DEBUG] staff={staff_name} office={office} "
+                  f"year={year} month={month} → target={tgt} enrolled={enr} tier={tier}")
 
             from ..engine.constants import (
                 SCHEME_HN_DIRECT, SCHEME_CO_SUB, OFFICE_HN, OFFICE_DN,
