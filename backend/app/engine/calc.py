@@ -115,26 +115,43 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.base_rate      = c.prior_month_rate
         c.note_enrolled  = f"Management override: {c.prior_month_rate:,.0f}"; return
 
+    # Pending add-on amount captured from Step 2.8b when applies_as=ADD.
+    # Applied AFTER base rate + package, so Guardian / Dependant supplement
+    # rather than replace the case's main bonus path.
+    pending_addon: int = 0
+    pending_addon_label: str = ""
+    pending_addon_share: bool = False
+
     # ── STEP 2.8b: Service fee (v6.3 FIX #3: CONTRACT zero falls through) ────
     if c.service_fee_type and c.service_fee_type.upper() not in (SVC_NONE, ""):
         sf = (cfg.get_service_fee(c.service_fee_type, SVC_SERVICE_FEE) or
               cfg.get_service_fee(c.service_fee_type, SVC_CONTRACT))
         if sf:
             amount = sf.coun_bonus if is_counsellor else sf.co_bonus
-            # CONTRACT fee with zero amount on fees_paid status → fall through to Step 3.5
-            if amount == 0 and sf.category == SVC_CONTRACT and sr.fees_paid_non_enrolled:
-                pass  # Step 3.5 will apply 400k fees-paid rate
+
+            # NEW: applies_as=ADD → capture amount, do NOT return.
+            # Add-on family (Guardian, Dependant): the case continues through
+            # base rate + package logic, then receives this add-on at the end.
+            if getattr(sf, "applies_as", "REPLACE") == "ADD":
+                pending_addon       = amount
+                pending_addon_label = sf.code
+                pending_addon_share = bool(getattr(sf, "share_with_other_co", False))
+                # fall through to Step 3+
             else:
-                if c.handover.upper() == "YES":
-                    amount = amount // 2
-                    c.note_enrolled = f"{c.service_fee_type}: × 50% (handover) = {amount:,.0f}"
+                # CONTRACT fee with zero amount on fees_paid status → fall through to Step 3.5
+                if amount == 0 and sf.category == SVC_CONTRACT and sr.fees_paid_non_enrolled:
+                    pass  # Step 3.5 will apply 400k fees-paid rate
                 else:
-                    c.note_enrolled = f"{c.service_fee_type}: {amount:,.0f}"
-                c.bonus_enrolled = amount
-                c.base_rate      = amount
-                if sf.category == SVC_CONTRACT:
-                    _apply_package(c, is_counsellor, cfg, sr)
-                return
+                    if c.handover.upper() == "YES":
+                        amount = amount // 2
+                        c.note_enrolled = f"{c.service_fee_type}: × 50% (handover) = {amount:,.0f}"
+                    else:
+                        c.note_enrolled = f"{c.service_fee_type}: {amount:,.0f}"
+                    c.bonus_enrolled = amount
+                    c.base_rate      = amount
+                    if sf.category == SVC_CONTRACT:
+                        _apply_package(c, is_counsellor, cfg, sr)
+                    return
         else:
             c.note_enrolled = f"Service fee '{c.service_fee_type}' not found → 0"; return
 
@@ -194,6 +211,31 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled = f"Partner institution: {r:,.0f}"
         return
 
+    # ── STEP 6.5: Enrolled at ** GROUP / MASTER / OUT_OF_SYSTEM ──────────────
+    # Apr 2026 (v6.4): a case enrolled through a double-star (**) partner
+    # institution that is also classified as GROUP / MASTER_AGENT / OUT_OF_SYSTEM
+    # receives a flat out-of-system rate (800k for HCM_DIRECT) — not the
+    # tier-based rate, and no package bonus on top. This codifies the rule
+    # that out-of-system enrolments don't compound with the standard tier and
+    # package incentive structure.
+    if (sr.counts_as_enrolled
+        and "**" in (c.institution or "")
+        and c.institution_type in (INST_GROUP, INST_MASTER_AGENT, INST_OUT_OF_SYS)):
+        r = rates.get("out_sys_co", 800_000) * 2  # out_sys_co=400k base, ** doubles to 800k
+        # NOTE: rate currently derived as 2× out_sys_co. If business changes the
+        # ** enrolled rate independently of the * fees-paid rate, add a separate
+        # ref_base_rates entry (e.g. tier='OUT_SYS_ENROLLED') and read it here.
+        c.bonus_enrolled = r
+        c.base_rate      = r
+        c.note_enrolled  = f"Enrolled out-of-system (**): {r:,.0f}"
+        # No package bonus, no priority — but pending add-on (Guardian/etc) still applies
+        if pending_addon > 0:
+            payout = pending_addon // 2 if pending_addon_share else pending_addon
+            c.bonus_enrolled += payout
+            c.note_enrolled = (c.note_enrolled +
+                f" | {pending_addon_label}: +{payout:,.0f}").strip(" | ")
+        return
+
     # ── STEP 7: Base rate ─────────────────────────────────────────────────────
     resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
 
@@ -248,8 +290,22 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled  = (c.note_enrolled +
                             f" | Pre-sales 50/50 with {c.presales_agent}").strip(" | ")
 
-    # ── STEP 9: Package then priority ─────────────────────────────────────────
+    # ── STEP 9: Package then add-on then priority ────────────────────────────
     _apply_package(c, is_counsellor, cfg, sr)
+
+    # NEW: apply Guardian / Dependant / other ADD-category service fees AFTER
+    # the package bonus has been added. Halve the amount when the rule has
+    # share_with_other_co=True (Guardian splits 50/50 with the other CO who
+    # handled the visa portion). Priority bonus runs after this so it can use
+    # the post-add-on base_rate if needed.
+    if pending_addon > 0:
+        payout = pending_addon // 2 if pending_addon_share else pending_addon
+        c.bonus_enrolled += payout
+        suffix = (f"{pending_addon_label}: 50/50 split = +{payout:,.0f}"
+                  if pending_addon_share
+                  else f"{pending_addon_label}: +{payout:,.0f}")
+        c.note_enrolled = (c.note_enrolled + " | " + suffix).strip(" | ")
+
     _apply_priority(c, cfg)
     _apply_advance_offset(c, sr)
 

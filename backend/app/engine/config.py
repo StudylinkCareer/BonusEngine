@@ -57,6 +57,9 @@ class ServiceFeeRuleObj:
     coun_bonus: int = 0
     category: str = "SERVICE_FEE"   # SERVICE_FEE | PACKAGE | CONTRACT
     applies_to: str = "ALL"          # ALL | DIRECT | OUT_OF_SYSTEM | MASTER_AGENT
+    applies_as: str = "REPLACE"      # REPLACE = primary fee replaces base rate
+                                      # ADD     = additive (Guardian/Dependant) — added after base+package
+    share_with_other_co: bool = False # True → halve at payout (50/50 split with another CO)
     keywords: str = ""
     active: bool = True
     description: str = ""
@@ -437,6 +440,8 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
             coun_bonus=r.coun_bonus,
             category=r.category or "SERVICE_FEE",
             applies_to=r.applies_to or "ALL",
+            applies_as=(r.applies_as or "REPLACE") if hasattr(r, 'applies_as') else "REPLACE",
+            share_with_other_co=bool(r.share_with_other_co) if hasattr(r, 'share_with_other_co') else False,
             keywords=r.keywords or "",
             active=True,
             description=r.description or "",

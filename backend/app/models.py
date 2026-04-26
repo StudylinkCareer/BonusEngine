@@ -497,6 +497,8 @@ class ServiceFeeRate(Base):
     co_bonus     = Column(Integer, default=0)
     category     = Column(String(30))     # SERVICE_FEE | PACKAGE | CONTRACT
     applies_to   = Column(String(30))     # ALL | DIRECT | OUT_OF_SYSTEM | MASTER_AGENT
+    applies_as   = Column(String(10), default="REPLACE")  # REPLACE | ADD
+    share_with_other_co = Column(Boolean, default=False)  # True → halve when paid out
     timing       = Column(String(200))
     description  = Column(Text)
     note         = Column(Text)
