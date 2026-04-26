@@ -277,7 +277,8 @@ async def upload_report(
                     "section":            "enrolled" if counts_enrolled else "closed",
                 })
             print(f"[UPLOAD DEBUG] Cases from engine: {len(parsed_cases)}")
-            engine_total = sum(c.get("bonus_enrolled", 0) for c in parsed_cases)
+            engine_total = sum(c.get("bonus_enrolled", 0) + c.get("bonus_priority", 0)
+                               for c in parsed_cases)
 
         except Exception as e:
             import traceback
