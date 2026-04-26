@@ -38,7 +38,8 @@ def resolve_meet_tier(incentive: int, cfg: "BonusConfig" = None) -> str:
 
 
 def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
-                             cfg: BonusConfig) -> int:
+                             cfg: BonusConfig,
+                             month: int = 0, year: int = 0) -> int:
     weighted = 0.0
     for c in cases:
         if c.row_type == ROW_ADDON or c.is_duplicate or c.exclude_from_calc:
@@ -48,10 +49,19 @@ def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
             print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: deferral={c.deferral}")
             continue
         sr = cfg.get_status_rule(c.app_status)
-        if sr.is_carry_over or sr.is_zero_bonus or not sr.counts_as_enrolled:
+        # Apr 2026: same-period carry-over fix — if course start is in the
+        # current period, the case behaves as a normal enrolled (not carry-over),
+        # so it should count toward the tier target.
+        same_period_enrol = bool(
+            month and year and c.course_start
+            and c.course_start.year == year
+            and c.course_start.month == month
+        )
+        carry_for_count = sr.is_carry_over and not same_period_enrol
+        if carry_for_count or sr.is_zero_bonus or not sr.counts_as_enrolled:
             print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: status={c.app_status} "
-                  f"carry={sr.is_carry_over} zero={sr.is_zero_bonus} "
-                  f"counts={sr.counts_as_enrolled}")
+                  f"carry={sr.is_carry_over} same_period={same_period_enrol} "
+                  f"zero={sr.is_zero_bonus} counts={sr.counts_as_enrolled}")
             continue
         if sr.fees_paid_non_enrolled:
             if c.institution_type in (INST_MASTER_AGENT, INST_GROUP, INST_OUT_OF_SYS):
@@ -407,7 +417,7 @@ def calculate_bonuses(cases: List[CaseRecord], staff_name: str,
                       enrolled_override: int = -1,
                       ) -> Tuple[List[CaseRecord], str, int, int]:
     target, scheme = cfg.get_staff_target(staff_name, year, month, office=office)
-    enrolled_count  = count_enrolled_for_tier(cases, scheme, cfg)
+    enrolled_count  = count_enrolled_for_tier(cases, scheme, cfg, month=month, year=year)
     if enrolled_override >= 0:
         enrolled_count = enrolled_override
     tier            = determine_tier(enrolled_count, target, inherited_tier)
