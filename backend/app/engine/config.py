@@ -213,29 +213,50 @@ class BonusConfig:
     def _ascii(s: str) -> str:
         return unicodedata.normalize('NFKD', s).encode('ascii','ignore').decode('ascii').lower().strip()
 
-    def get_staff_target(self, name: str, year: int, month: int) -> Tuple[int, str]:
+    def get_staff_target(self, name: str, year: int, month: int,
+                         office: str = "") -> Tuple[int, str]:
+        """
+        Look up the target for (name, year, month) at the given office.
+        Storage keys are (name_lower, office_upper) tuples since staff can
+        have separate targets per office. If `office` is omitted, the first
+        match wins (legacy behaviour); pass it explicitly for correct results
+        on multi-office staff.
+        """
         resolved = self.resolve_staff_name(name)
-        for key in [resolved.lower(), name.strip().lower()]:
-            st = self.staff_targets.get(key)
-            if st: return st.targets.get(year,{}).get(month,0), st.scheme
+        wanted_office = (office or "").upper()
+        candidate_names = [resolved.lower(), name.strip().lower()]
+
+        # Exact match: (name, office)
+        if wanted_office:
+            for nm in candidate_names:
+                st = self.staff_targets.get((nm, wanted_office))
+                if st:
+                    return st.targets.get(year, {}).get(month, 0), st.scheme
+
+        # Fall back: any office for this name
+        for (nm_key, off_key), st in self.staff_targets.items():
+            if nm_key in candidate_names:
+                return st.targets.get(year, {}).get(month, 0), st.scheme
+
+        # ASCII fold fallback for accents
         na = self._ascii(name); ra = self._ascii(resolved)
-        for key, st in self.staff_targets.items():
-            if self._ascii(key) in (na, ra):
-                return st.targets.get(year,{}).get(month,0), st.scheme
-        for key, st in self.staff_targets.items():
-            ka = self._ascii(key)
+        for (nm_key, off_key), st in self.staff_targets.items():
+            if self._ascii(nm_key) in (na, ra):
+                return st.targets.get(year, {}).get(month, 0), st.scheme
+        for (nm_key, off_key), st in self.staff_targets.items():
+            ka = self._ascii(nm_key)
             if ka in na or na in ka:
-                return st.targets.get(year,{}).get(month,0), st.scheme
+                return st.targets.get(year, {}).get(month, 0), st.scheme
+
         return 0, SCHEME_HCM_DIRECT
 
     def get_staff_scheme(self, name: str) -> str:
         resolved = self.resolve_staff_name(name)
-        for key in [resolved.lower(), name.strip().lower()]:
-            st = self.staff_targets.get(key)
-            if st: return st.scheme
-        # Look up in staff names directly
-        st = self.staff_targets.get(self._ascii(name))
-        return st.scheme if st else SCHEME_HCM_DIRECT
+        candidate_names = [resolved.lower(), name.strip().lower()]
+        for (nm_key, off_key), st in self.staff_targets.items():
+            if nm_key in candidate_names:
+                return st.scheme
+        return SCHEME_HCM_DIRECT
 
     def get_base_rate(self, scheme: str, tier: str, role: str = "CO") -> int:
         """Returns base rate amount for scheme/tier/role. Returns 0 if not found."""
@@ -414,7 +435,11 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
 
     # ── Staff Targets ─────────────────────────────────────────────────────────
     for r in db.query(StaffTargetModel).all():
-        key = r.staff_name.lower()
+        # Key by (name, office) so a staff member with HCM + HN targets keeps
+        # both rows. Previously the dict was keyed by name only and the second
+        # row silently overwrote the first — last-write-wins.
+        office_key = (r.office or OFFICE_HCM).upper()
+        key = (r.staff_name.lower(), office_key)
         if key not in cfg.staff_targets:
             # Look up scheme from StaffName table
             sn = db.query(StaffNameModel).filter(

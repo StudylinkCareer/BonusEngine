@@ -217,7 +217,7 @@ async def upload_report(
             raw_cases, _ = parse_crm_report(tmp_path, cfg)
             classified   = classify_cases(raw_cases, cfg, staff_name, year, month, {})
             calculated, tier, tgt, enr = calculate_bonuses(
-                classified, staff_name, year, month, cfg)
+                classified, staff_name, year, month, cfg, office=office)
             target, enrolled = tgt, enr
 
             from ..engine.constants import (

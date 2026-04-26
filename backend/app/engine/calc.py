@@ -387,7 +387,7 @@ def calculate_bonuses(cases: List[CaseRecord], staff_name: str,
                       office: str = OFFICE_HCM,
                       enrolled_override: int = -1,
                       ) -> Tuple[List[CaseRecord], str, int, int]:
-    target, scheme = cfg.get_staff_target(staff_name, year, month)
+    target, scheme = cfg.get_staff_target(staff_name, year, month, office=office)
     enrolled_count  = count_enrolled_for_tier(cases, scheme, cfg)
     if enrolled_override >= 0:
         enrolled_count = enrolled_override
