@@ -145,7 +145,17 @@ class BonusConfig:
     # ── Lookups ──────────────────────────────────────────────────────────────
 
     def get_status_rule(self, status: str) -> StatusRuleObj:
-        return self.status_rules.get(status.strip().lower(),
+        # Apr 2026: normalize Unicode dashes (en-dash U+2013, em-dash U+2014,
+        # minus U+2212, non-breaking hyphen U+2011) to regular hyphen-minus.
+        # CRM exports occasionally use en-dashes which look identical but
+        # break dict lookups against the hyphen-minus stored in DB.
+        normalized = (status.strip()
+                      .replace("\u2013", "-")
+                      .replace("\u2014", "-")
+                      .replace("\u2212", "-")
+                      .replace("\u2011", "-")
+                      .lower())
+        return self.status_rules.get(normalized,
                StatusRuleObj(status=status, is_zero_bonus=True))
 
     def get_service_fee(self, code: str, category: str = "") -> Optional[ServiceFeeRuleObj]:

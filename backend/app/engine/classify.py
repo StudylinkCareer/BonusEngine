@@ -141,6 +141,11 @@ def classify_cases(
         # Service fee
         if "service_fee_type" in ov:
             c.service_fee_type = ov["service_fee_type"]
+        elif c.service_fee_type and c.service_fee_type.upper() not in ("NONE", ""):
+            # Apr 2026: v7 input already provided a service_fee_type, don't
+            # let note-based inference clobber it (e.g. note "$120 USD renewal"
+            # would otherwise override the operator's explicit code).
+            pass
         else:
             sf = _infer_service_fee(c.notes, c.client_type_code, c.app_status)
             if sf:
