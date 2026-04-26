@@ -42,20 +42,29 @@ def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
     weighted = 0.0
     for c in cases:
         if c.row_type == ROW_ADDON or c.is_duplicate or c.exclude_from_calc:
+            print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: row_type/dup/exclude")
             continue
         if c.deferral.upper() in DEFERRAL_ZERO_VALUES:
+            print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: deferral={c.deferral}")
             continue
         sr = cfg.get_status_rule(c.app_status)
         if sr.is_carry_over or sr.is_zero_bonus or not sr.counts_as_enrolled:
+            print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: status={c.app_status} "
+                  f"carry={sr.is_carry_over} zero={sr.is_zero_bonus} "
+                  f"counts={sr.counts_as_enrolled}")
             continue
         if sr.fees_paid_non_enrolled:
             if c.institution_type in (INST_MASTER_AGENT, INST_GROUP, INST_OUT_OF_SYS):
+                print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: fees_paid + {c.institution_type}")
                 continue
         if c.is_agent_referred and c.institution_type == INST_DIRECT and scheme != SCHEME_CO_SUB:
             w = 0.7
         else:
             w = cfg.get_kpi_weight(c.client_type_code, c.institution_type, scheme)
+        print(f"  [COUNT KEEP] {c.contract_id} {c.student_name}: weight={w} "
+              f"agent_ref={c.is_agent_referred} inst_type={c.institution_type}")
         weighted += w
+    print(f"  [COUNT TOTAL] weighted={weighted} → int={int(weighted)}")
     return int(weighted)
 
 
