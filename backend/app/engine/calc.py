@@ -67,10 +67,11 @@ def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
             if c.institution_type in (INST_MASTER_AGENT, INST_GROUP, INST_OUT_OF_SYS):
                 print(f"  [COUNT SKIP] {c.contract_id} {c.student_name}: fees_paid + {c.institution_type}")
                 continue
-        if c.is_agent_referred and c.institution_type == INST_DIRECT and scheme != SCHEME_CO_SUB:
-            w = 0.7
-        else:
-            w = cfg.get_kpi_weight(c.client_type_code, c.institution_type, scheme)
+        # Apr 2026: agent-referral weighting now flows through get_kpi_weight
+        # so all weight rules live in ref_kpi_weights and can be tuned in DB.
+        # (Old code: special-cased is_agent_referred=True + DIRECT to 0.7 here.)
+        w = cfg.get_kpi_weight(c.client_type_code, c.institution_type, scheme,
+                               is_agent_referred=c.is_agent_referred)
         print(f"  [COUNT KEEP] {c.contract_id} {c.student_name}: weight={w} "
               f"agent_ref={c.is_agent_referred} inst_type={c.institution_type}")
         weighted += w

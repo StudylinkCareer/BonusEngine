@@ -132,6 +132,7 @@ class BonusConfig:
         self.skip_labels:       frozenset                        = SKIP_LABELS
         self.master_agents:     List[str]                        = []
         self.priority_instns:   List[PriorityInstitutionObj]     = []
+        self.kpi_weights:       list                             = []  # KpiWeightObj list, sorted by priority asc
         self.base_rates:        Dict[str, Dict[str, Dict[str, int]]] = {}
         # scheme → tier → role → amount
         self.special_rates:     List[SpecialRateObj]             = []
@@ -357,10 +358,30 @@ class BonusConfig:
             return False
         return True
 
-    def get_kpi_weight(self, ct_code: str, inst_type: str, scheme: str) -> float:
+    def get_kpi_weight(self, ct_code: str, inst_type: str, scheme: str,
+                       is_agent_referred: bool = False) -> float:
+        """
+        Look up KPI count weight from ref_kpi_weights table.
+        First match wins; rules are pre-sorted by priority (lower = more specific).
+
+        Apr 2026: refactored from hardcoded constants to DB-driven lookup so
+        weights can be tuned without a code deploy. is_agent_referred is now
+        passed in (was previously checked separately in calc.py count function).
+        """
+        ct = (ct_code or "").upper()
+        it = (inst_type or "").upper()
+        sc = (scheme or "").upper()
+        for w in self.kpi_weights:
+            if w.scheme not in ("*", sc): continue
+            if w.client_type and w.client_type.upper() != ct: continue
+            if w.institution_type and w.institution_type.upper() != it: continue
+            if w.is_agent_referred is not None and bool(w.is_agent_referred) != bool(is_agent_referred):
+                continue
+            return float(w.weight)
+        # Hardcoded fallback if table is empty (defensive — preserves old behaviour)
         from .constants import (CT_SUMMER, CT_GUARDIAN, CT_TOURIST,
                                  CT_MIGRATION, CT_DEPENDANT, CT_VISA_ONLY, CT_VIETNAM,
-                                 INST_MASTER_AGENT, INST_OUT_OF_SYS)
+                                 INST_MASTER_AGENT, INST_OUT_OF_SYS, INST_DIRECT)
         if ct_code in (CT_SUMMER, CT_GUARDIAN, CT_TOURIST, CT_MIGRATION, CT_DEPENDANT, CT_VISA_ONLY):
             return 0.0
         if ct_code == CT_VIETNAM:
@@ -368,6 +389,8 @@ class BonusConfig:
         if inst_type == INST_MASTER_AGENT:
             return 1.0
         if inst_type == INST_OUT_OF_SYS:
+            return 0.7
+        if inst_type == INST_DIRECT and is_agent_referred:
             return 0.7
         return 1.0
 
@@ -533,6 +556,17 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
                 annual_target=r.annual_target,
                 achieved_ytd=ytd,
             ))
+
+    # ── KPI Weights — from ref_kpi_weights ───────────────────────────────────
+    # Apr 2026: weights moved from hardcoded constants in get_kpi_weight()
+    # to a DB table so business can tune without a code deploy.
+    try:
+        from ..models import KpiWeight
+        kpi_rows = db.query(KpiWeight).filter(KpiWeight.is_active==True).all()
+        cfg.kpi_weights = sorted(kpi_rows, key=lambda r: r.priority or 999)
+    except Exception:
+        # Table may not exist on first deploy — fall back to hardcoded path
+        cfg.kpi_weights = []
 
     # ── Base Rates — from ref_base_rates ─────────────────────────────────────
     for r in db.query(BaseRate).filter(BaseRate.is_active==True).all():

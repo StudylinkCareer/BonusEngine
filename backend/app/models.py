@@ -556,6 +556,33 @@ class InstitutionAlias(Base):
     institution = relationship("PriorityInstitution", back_populates="aliases")
 
 
+class KpiWeight(Base):
+    """
+    KPI count weights — how much each enrolment counts toward staff target.
+
+    Background: not every enrolment is "1 chỉ tiêu". Some count for less:
+    - Guardian/Tourist/Summer/Visa-only client types: 0.0 (don't count at all)
+    - Vietnam domestic: 0.5 (half weight)
+    - Out-of-system enrolments: 0.7
+    - Agent-referred direct enrolments: 0.7
+
+    Lookup uses most-specific match wins, ordered by `priority` (lower first).
+    Use scheme='*' to apply to all schemes, or specific value (HCM_DIRECT, HN_DIRECT,
+    CO_SUB) to scope.
+    NULL columns are wildcards. is_agent_referred can be TRUE/FALSE/NULL (NULL=any).
+    """
+    __tablename__ = "ref_kpi_weights"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    scheme           = Column(String(20), nullable=False)
+    client_type      = Column(String(30))
+    institution_type = Column(String(20))
+    is_agent_referred = Column(Boolean)
+    weight           = Column(Float, nullable=False)
+    priority         = Column(Integer, default=100)
+    is_active        = Column(Boolean, default=True)
+    description      = Column(Text)
+
+
 class YtdTracker(Base):
     """
     08_YTD_TRACKER — Year-to-date enrolment counts per priority institution.
