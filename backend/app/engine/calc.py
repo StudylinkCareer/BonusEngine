@@ -131,8 +131,16 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
     # ── STEP 2.8a: MGMT_EXCEPTION ─────────────────────────────────────────────
     if c.service_fee_type.upper() == MGMT_EXCEPTION:
         c.bonus_enrolled = c.prior_month_rate
-        c.base_rate      = c.prior_month_rate
-        c.note_enrolled  = f"Management override: {c.prior_month_rate:,.0f}"; return
+        # Apr 2026: base_rate for priority calc is the underlying tier rate
+        # (not the override total, which already includes package). Priority %
+        # always applies to base, never to package.
+        resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
+        rate_key = f"coun_{resolved_tier}" if is_counsellor else resolved_tier
+        derived_base = rates.get(rate_key, rates.get(resolved_tier, rates.get(TIER_UNDER, 800_000)))
+        c.base_rate = derived_base
+        c.note_enrolled = f"Management override: {c.prior_month_rate:,.0f}"
+        _apply_priority(c, cfg)
+        return
 
     # Pending add-on amount captured from Step 2.8b when applies_as=ADD.
     # Applied AFTER base rate + package, so Guardian / Dependant supplement
@@ -169,7 +177,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
                     c.bonus_enrolled = amount
                     c.base_rate      = amount
                     if sf.category == SVC_CONTRACT:
-                        _apply_package(c, is_counsellor, cfg, sr)
+                        _apply_package(c, is_counsellor, cfg, sr, tier=tier)
                     return
         else:
             c.note_enrolled = f"Service fee '{c.service_fee_type}' not found → 0"; return
@@ -220,7 +228,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.bonus_enrolled = c.prior_month_rate // 2
         c.note_enrolled  = (f"Carry-over: {c.prior_month_rate:,.0f} × 50% = "
                             f"{c.bonus_enrolled:,.0f}")
-        _apply_package(c, is_counsellor, cfg, sr)
+        _apply_package(c, is_counsellor, cfg, sr, tier=tier)
         _apply_advance_offset(c, sr); return
 
     # ── STEP 5: CountsAsEnrolled gate ──────────────────────────────────────────
@@ -298,9 +306,22 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
 
     # ── STEP 8: Split percentage ──────────────────────────────────────────────
     if sr.is_current_enrolled:
-        split = 1.0 if is_counsellor else 0.5
-        sfx = " | 100% da nhap hoc" if is_counsellor else " | 50% chua co visa"
+        # Apr 2026: at OVER tier the case pays its full lifetime amount this
+        # month per business reporting (CO gets advance + remaining together).
+        # Lower tiers still apply the 50% advance split for CO.
+        if not is_counsellor and tier == TIER_OVER:
+            split = 1.0
+            sfx = " | 100% (Over target current-enrolled)"
+        else:
+            split = 1.0 if is_counsellor else 0.5
+            sfx = " | 100% da nhap hoc" if is_counsellor else " | 50% chua co visa"
         c.note_enrolled = (c.note_enrolled + sfx).strip(" | ")
+    elif sr.is_carry_over and same_period_enrol:
+        # Same-period carry-over status: both enrolment and visa happened in
+        # the current period, so no prior advance was paid. Use full 1.0
+        # split, treating it as a normal closed-enrolled case.
+        split = 1.0
+        c.note_enrolled = (c.note_enrolled + " | Same-period (no prior advance)").strip(" | ")
     elif is_counsellor:
         split = sr.coun_pct
     elif scheme == SCHEME_CO_SUB:
@@ -320,7 +341,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
                             f" | Pre-sales 50/50 with {c.presales_agent}").strip(" | ")
 
     # ── STEP 9: Package then add-on then priority ────────────────────────────
-    _apply_package(c, is_counsellor, cfg, sr)
+    _apply_package(c, is_counsellor, cfg, sr, tier=tier)
 
     # NEW: apply Guardian / Dependant / other ADD-category service fees AFTER
     # the package bonus has been added. Halve the amount when the rule has
@@ -340,8 +361,8 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
 
 
 def _apply_package(c: CaseRecord, is_counsellor: bool,
-                   cfg: BonusConfig, sr: StatusRule) -> None:
-    """Applies package bonus. For current-enrolled, applies 50% split."""
+                   cfg: BonusConfig, sr: StatusRule, tier: str = "") -> None:
+    """Applies package bonus. For current-enrolled below OVER tier, applies 50% split."""
     if c.package_type and c.package_type.upper() not in (PKG_NONE, ""):
         # Resolve free-text package name to canonical code, then standardise
         # c.package_type so downstream notes/output use the standard form.
@@ -352,7 +373,11 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
         if pf:
             amt = pf.coun_bonus if is_counsellor else pf.co_bonus
             if amt > 0:
-                if sr.is_current_enrolled:
+                # Apr 2026: at OVER tier, current-enrolled receives the full
+                # package bonus (consistent with the full base rate paid in
+                # Step 8 — báo cáo treats the case lifetime amount as paid up
+                # front). Lower tiers still halve.
+                if sr.is_current_enrolled and tier != TIER_OVER:
                     amt = amt // 2
                 c.bonus_enrolled += amt
                 c.note_enrolled = (
