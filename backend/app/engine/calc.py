@@ -23,10 +23,15 @@ from .models import CaseRecord
 
 
 def determine_tier(enrolled: int, target: int, inherited_tier: str = "") -> str:
-    if target == 0:
+    # When target is zero (or unset), the staff isn't on a tiered scheme for
+    # this period. Default to UNDER tier — enrolments still pay the low rate
+    # but don't trigger OVER tier rates. This matches báo cáo behavior for
+    # Yến's HN office cases, where her HN target was wound down to 0 from
+    # Mar 2024 onwards but she still processed an occasional HN file.
+    if target <= 0:
         if inherited_tier:
             return inherited_tier
-        return TIER_OVER if enrolled > 0 else TIER_UNDER
+        return TIER_UNDER
     if enrolled > target:  return TIER_OVER
     if enrolled == target: return TIER_MEET
     return TIER_UNDER
@@ -140,7 +145,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         derived_base = rates.get(rate_key, rates.get(resolved_tier, rates.get(TIER_UNDER, 800_000)))
         c.base_rate = derived_base
         c.note_enrolled = f"Management override: {c.prior_month_rate:,.0f}"
-        _apply_priority(c, cfg)
+        _apply_priority(c, cfg, year)
         return
 
     # Pending add-on amount captured from Step 2.8b when applies_as=ADD.
@@ -230,23 +235,48 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled  = (f"Carry-over: {c.prior_month_rate:,.0f} × 50% = "
                             f"{c.bonus_enrolled:,.0f}")
         _apply_package(c, is_counsellor, cfg, sr, tier=tier)
+        # Apr 2026 (v6.5): carry-over cases at priority partners get the
+        # remaining 50% of the priority bonus too. Without this call the
+        # priority side of the carry-over was missing entirely.
+        # base_rate has already been set to prior_month_rate above; halve it
+        # so priority is calculated on the same 50% notional that the
+        # enrolled bonus is on.
+        c.base_rate = c.bonus_enrolled
+        _apply_priority(c, cfg, year)
         _apply_advance_offset(c, sr); return
 
     # ── STEP 5: CountsAsEnrolled gate ──────────────────────────────────────────
     if not sr.counts_as_enrolled and not sr.is_current_enrolled:
         c.note_enrolled = f"Status: {c.app_status} → 0"; return
 
-    # ── STEP 6: Partner case (v6.3 FIX #6: * or ** institution → 400k) ───────
-    # Apr 2026: scope tightened — partner haircut applies to fees-paid /
-    # cancelled-with-fee statuses only. For genuinely enrolled cases
-    # (counts_as_enrolled=True), the case falls through to normal tier-based
-    # base rate calculation in Step 7. Without this scope, every enrolled
-    # case at a partner institution was being capped at 400k regardless of
-    # tier, target achievement, or package.
+    # ── STEP 6: Partner haircut for fees-paid (non-enrolled) at * institution ──
+    # When the case is at a * partner institution AND the status is fees-paid
+    # / cancelled-with-fee (NOT counts_as_enrolled), apply the flat PARTNER
+    # rate. For enrolled cases, the institution_type field on the v7 input
+    # determines treatment:
+    #   • inst_type = DIRECT       → full tier base rate (in-system enrolment)
+    #   • inst_type = MASTER_AGENT → reduced via Step 6.5/Step 7 logic
+    #   • inst_type = OUT_OF_SYSTEM → 2× out_sys_co = 800k (out-of-system
+    #     enrolment, e.g., USA via GE/GEEBEE/GUS or AUS via Can-Achieve).
     if _is_partner_case(c.institution) and not sr.counts_as_enrolled:
         r = rates.get("out_sys_co", 400_000)
         c.bonus_enrolled = r; c.base_rate = r
         c.note_enrolled = f"Partner institution: {r:,.0f}"
+        return
+    # Out-of-system enrolment (operator-flagged) — scheme-specific rate.
+    # HCM_DIRECT: 2× out_sys_co (800k for USA via GE/GEEBEE/GUS, AUS via
+    #             Can-Achieve, etc.) — out-of-system enrolment is rarer and
+    #             pays a doubled bonus.
+    # CO_SUB:     PARTNER rate (400k) — CO Sub officers earn the standard
+    #             partner rate on out-of-system referrals.
+    if (sr.counts_as_enrolled
+        and c.institution_type == INST_OUT_OF_SYS):
+        if scheme == SCHEME_CO_SUB:
+            r = rates.get("out_sys_co", 400_000)
+        else:
+            r = rates.get("out_sys_co", 400_000) * 2
+        c.bonus_enrolled = r; c.base_rate = r
+        c.note_enrolled = f"Out-of-system enrolment ({scheme}): {r:,.0f}"
         return
 
     # ── STEP 6.5: Enrolled at ** GROUP / MASTER / OUT_OF_SYSTEM ──────────────
@@ -307,10 +337,15 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
 
     # ── STEP 8: Split percentage ──────────────────────────────────────────────
     if sr.is_current_enrolled:
-        # Apr 2026: at OVER tier the case pays its full lifetime amount this
-        # month per business reporting (CO gets advance + remaining together).
-        # Lower tiers still apply the 50% advance split for CO.
-        if not is_counsellor and tier == TIER_OVER:
+        # CO_SUB always pays 50% on Current-Enrolled regardless of tier.
+        # HCM_DIRECT at OVER tier pays 100% (full lifetime amount this month
+        # because the staff has over-achieved their target). Other HCM_DIRECT
+        # tiers pay 50% upfront, 50% as carry-over when visa arrives.
+        # Counsellor role always pays 100%.
+        if scheme == SCHEME_CO_SUB:
+            split = 0.5
+            sfx = " | 50% chua co visa (CO_SUB)"
+        elif not is_counsellor and tier == TIER_OVER:
             split = 1.0
             sfx = " | 100% (Over target current-enrolled)"
         else:
@@ -357,7 +392,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
                   else f"{pending_addon_label}: +{payout:,.0f}")
         c.note_enrolled = (c.note_enrolled + " | " + suffix).strip(" | ")
 
-    _apply_priority(c, cfg)
+    _apply_priority(c, cfg, year)
     _apply_advance_offset(c, sr)
 
 
@@ -386,19 +421,55 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
                 ).strip(" | ")
 
 
-def _apply_priority(c: CaseRecord, cfg: BonusConfig) -> None:
-    """v6.3 FIX #9: priority calc uses c.base_rate (pre-package), not bonus_enrolled."""
+def _apply_priority(c: CaseRecord, cfg: BonusConfig, year: int = 0) -> None:
+    """Priority bonus calculation.
+
+    For each case at a priority partner institution:
+        bonus_priority = base_rate × bonus_pct × factor
+
+    Apr 2026: priority partnerships are now annual decisions (the bonus_pct,
+    annual_target, etc. can change year over year, including dropping to 0%
+    for a year). Lookup is by (institution_name, year) — when the case's
+    year doesn't match any partner row, no priority bonus is paid.
+
+    Factor source (in priority order):
+      1. c.priority_factor (per-case override from v7 input). Use this when
+         the báo cáo author has recorded an explicit factor for this case.
+      2. Derived from priority_instns: 1.0 if achieved_ytd >= annual_target,
+         else 0.5. Only used when achieved_ytd is populated (> 0) so we
+         have actual YTD tracking data.
+
+    If neither signal is present, the engine pays NO priority bonus. This
+    avoids the previous behavior of assuming 50% factor when no data was
+    available (which over-paid priority on cases where the partnership had
+    ended or never paid priority for that staff).
+    """
     if c.base_rate <= 0: return
     inst_lower = c.institution.lower()
     for p in cfg.priority_instns:
+        # Year-aware match: skip rows for a different year. A row with year=0
+        # (legacy / not yet migrated) matches any year — backwards compatible.
+        if year and p.year and p.year != year:
+            continue
         if p.name.lower() in inst_lower or inst_lower in p.name.lower():
-            af     = 1.0 if p.achieved_ytd >= p.annual_target else 0.5
+            # When bonus_pct is 0 (e.g., 2025 partnerships zeroed out), there
+            # is nothing to pay regardless of factor.
+            if p.bonus_pct == 0:
+                return
+            if c.priority_factor > 0:
+                af = c.priority_factor
+                source = "v7 input"
+            elif p.achieved_ytd > 0:
+                # YTD data populated — derive factor from target progress
+                af = 1.0 if p.achieved_ytd >= p.annual_target else 0.5
+                source = f"YTD {p.achieved_ytd}/{p.annual_target}"
+            else:
+                # No factor signal at all — pay no priority bonus
+                return
             af_pct = int(af * 100)
             c.bonus_priority = int(c.base_rate * p.bonus_pct * af)
             c.note_priority  = f"Them {p.bonus_pct*100:.0f}% bonus cho {p.name}"
-            c.note_priority2 = (
-                f"Chi tieu {p.annual_target}, Dat {p.achieved_ytd} → {af_pct}%"
-            )
+            c.note_priority2 = f"Factor {af_pct}% (source: {source})"
             break
 
 

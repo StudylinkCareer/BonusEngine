@@ -58,6 +58,15 @@ class CaseRecord:
     addon_code:       str = ""             # ADDON rows only
     addon_count:      int = 0              # ADDON rows only
 
+    # ── Per-case priority factor override (Apr 2026 v6.5) ─────────────────────
+    # When > 0, _apply_priority uses this factor instead of deriving from
+    # achieved_ytd vs annual_target. Captures the partner-specific business
+    # decision recorded by the báo cáo author (e.g., RMIT promoted to 100%
+    # effective Feb 2024 while other partners stayed at 50%).
+    # Range: 0.5 = half bonus, 1.0 = full bonus. 0 (default) means "use
+    # achieved_ytd-based logic".
+    priority_factor: float = 0.0
+
     # ── Derived fields (set during parsing/classification) ────────────────────
     client_type_code: str  = ""       # Canonical code from 15_CLIENT_TYPE_MAP
     country_code:     str  = ""       # Canonical code from 14_COUNTRY_CODES

@@ -83,6 +83,8 @@ class PriorityInstitutionObj:
     bonus_pct: float = 0.0
     annual_target: int = 0
     achieved_ytd: int = 0
+    year: int = 0   # Apr 2026: priority partnerships are now annual decisions.
+                    # Engine looks up by (name, year) — different rows per year.
 
 
 @dataclass
@@ -547,6 +549,7 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
             bonus_pct=r.bonus_pct,
             annual_target=r.annual_target,
             achieved_ytd=ytd,
+            year=r.year or 0,
         ))
         # One virtual entry per alias — same bonus parameters, alias as the name
         for alias_name in aliases_by_parent.get(r.id, []):
@@ -555,6 +558,7 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
                 bonus_pct=r.bonus_pct,
                 annual_target=r.annual_target,
                 achieved_ytd=ytd,
+                year=r.year or 0,
             ))
 
     # ── KPI Weights — from ref_kpi_weights ───────────────────────────────────

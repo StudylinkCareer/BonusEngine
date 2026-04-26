@@ -93,6 +93,11 @@ _HEADER_ALIASES = {
     "add-on count":             "addon_count",
     "add-on\ncount":            "addon_count",
     "addon count":              "addon_count",
+    # ── v7 priority factor override (col 34, NEW Apr 2026) ────────────────────
+    "priority factor":          "priority_factor",
+    "priority factor override": "priority_factor",
+    "priority factor\noverride":"priority_factor",
+    "pri factor":               "priority_factor",
 }
 
 
@@ -160,6 +165,22 @@ def _v2_int(row, col_map, key, default: int = 0) -> int:
     if idx is None or idx >= len(row):
         return default
     return _i(row[idx])
+
+
+def _v2_float(row, col_map, key, default: float = 0.0) -> float:
+    """Read a V2 floating-point column (e.g., priority_factor 0.5/1.0)."""
+    idx = col_map.get(key)
+    if idx is None or idx >= len(row):
+        return default
+    val = row[idx]
+    if val is None or val == "":
+        return default
+    try:
+        if isinstance(val, (int, float)):
+            return float(val)
+        return float(str(val).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return default
 
 
 def infer_institution_type(institution: str, system_type: str,
@@ -271,6 +292,7 @@ def parse_crm_report(file_path: str, cfg: BonusConfig
             c.institution_type = inst_type_v2  # V2 explicit value beats inferred
         c.group_agent_name = _v2_str(row, col_map, "group_agent_name", c.group_agent_name)
         c.targets_name    = _v2_str(row, col_map, "targets_name", c.targets_name)
+        c.priority_factor = _v2_float(row, col_map, "priority_factor", c.priority_factor)
 
         cases.append(c)
 
