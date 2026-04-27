@@ -39,6 +39,8 @@ from ..models import (
     BonusReportCase,
     BonusFieldChange,
 )
+from ..services.validator import classify_report, get_reference_list
+from ..services.recalc import recalculate_report
 from ..database import get_db
 
 ENGINE_AVAILABLE = False
@@ -260,6 +262,7 @@ async def upload_report(
                     "office":             c.office or office,
                     "row_type":           c.row_type,
                     "scheme":             case_scheme,
+                    "priority_factor":    float(getattr(c, 'priority_factor', 0.0)),
                     "counts_as_enrolled": counts_enrolled,
                     "prior_month_rate":   str(c.prior_month_rate) if c.prior_month_rate else "",
                     "deferral":           c.deferral,
@@ -768,3 +771,72 @@ def send_email(
     recipient = body.get("recipient", "staff")
     print(f"[EMAIL STUB] report={report_id} recipient={recipient}")
     return {"ok": True, "recipient": recipient, "status": "stub"}
+
+# =============================================================================
+# Validation — classify each field on each case as ok / alias / missing / unknown
+# =============================================================================
+
+@router.get("/{report_id}/validation")
+def get_validation(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return per-case, per-field validation status for the whole report.
+
+    Used by the frontend Review page to colour cells:
+      - "ok"      → green (or unstyled)
+      - "alias"   → yellow (acceptable but operator should pick canonical)
+      - "missing" → red (mandatory field is blank)
+      - "unknown" → red (value not in canonical or alias list)
+    """
+    report = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    cases = (db.query(BonusReportCase)
+             .filter(BonusReportCase.report_id == report_id).all())
+    return classify_report(db, cases)
+
+
+# =============================================================================
+# Reference list — for frontend dropdowns
+# =============================================================================
+
+@router.get("/reference/{ref_type}", include_in_schema=False)
+def get_reference(
+    ref_type: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return canonical and alias values for a given reference type."""
+    try:
+        return get_reference_list(db, ref_type)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+# =============================================================================
+# Recalculation — re-run engine on saved (possibly edited) cases
+# =============================================================================
+
+@router.post("/{report_id}/recalculate")
+def recalculate(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-run the bonus engine over every case in the report.
+
+    The engine reads BonusReportCase fields directly — operator edits made
+    via PATCH /cases/{id}/fields/{field} are picked up automatically.
+    """
+    report = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.status in ("approved", "distributed"):
+        raise HTTPException(
+            400,
+            f"Cannot recalculate — report is {report.status}. "
+            f"Approved reports are locked from further changes."
+        )
+    return recalculate_report(db, report, current_user)
