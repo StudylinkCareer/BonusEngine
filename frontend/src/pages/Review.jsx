@@ -89,17 +89,12 @@ const VALIDATION_STYLE = {
 }
 
 // ── Stage 2b: format helpers for date display ──────────────────────────────
-// CRM data and the engine speak ISO ("2025-09-15"). Vietnamese readers
-// expect DD/MM/YYYY. The conversions below are display-only — the value
-// stored in the DB stays ISO.
 const isoToDisplayDate = (iso) => {
   if (!iso) return ''
   const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (!m) return iso  // not ISO — show as-is (legacy data)
+  if (!m) return iso
   return `${m[3]}/${m[2]}/${m[1]}`
 }
-// Native <input type="date"> emits and consumes ISO. No conversion needed
-// for the input itself, only for the display cell.
 
 export default function Review() {
   const { id }   = useParams()
@@ -117,32 +112,28 @@ export default function Review() {
   const [submitting,   setSubmitting]   = useState(false)
   const [loading,      setLoading]      = useState(true)
 
-  // Stage 2a: validation state
   const [validation, setValidation] = useState({})
   const [validationSummary, setValidationSummary] = useState(null)
 
-  // Stage 2b: reference data cache for dropdowns. Loaded lazily on first
-  // edit attempt for each ref type. Shape:
-  //   { client_type: { canonical: [...], aliases: {...} }, ... }
   const [referenceCache, setReferenceCache] = useState({})
 
-  // Stage 2b: recalculation state
   const [recalculating, setRecalculating] = useState(false)
-  const [recalcResult, setRecalcResult] = useState(null)  // last recalc summary
+  const [recalcResult, setRecalcResult] = useState(null)
 
-  // Search / sort / filter
   const [globalSearch, setGlobalSearch] = useState('')
   const [sortCol,      setSortCol]      = useState(null)
   const [sortDir,      setSortDir]      = useState('asc')
   const [colFilters,   setColFilters]   = useState({})
   const [showFilters,  setShowFilters]  = useState(false)
 
-  // Column management
   const [colOrder,     setColOrder]     = useState(() => ALL_COLS.map(c => c.key))
   const [hiddenCols,   setHiddenCols]   = useState(() => new Set())
   const [showColMgr,   setShowColMgr]   = useState(false)
   const [dragKey,      setDragKey]      = useState(null)
   const [dragOverKey,  setDragOverKey]  = useState(null)
+
+  // Stage 3 — only show cases with engine warnings (when toggled on)
+  const [showOnlyWarnings, setShowOnlyWarnings] = useState(false)
 
   const commentRef  = useRef()
   const colMgrRef   = useRef()
@@ -176,7 +167,6 @@ export default function Review() {
     finally { setLoading(false) }
   }
 
-  // Stage 2b: load reference list for a field's ref type, cached per type
   const loadReference = async (refType) => {
     if (!refType) return null
     if (referenceCache[refType]) return referenceCache[refType]
@@ -218,6 +208,12 @@ export default function Review() {
     return null
   }
 
+  // Stage 3 — count cases with engine warnings
+  const warningCount = useMemo(
+    () => cases.filter(c => c.has_warnings).length,
+    [cases]
+  )
+
   const uniqueVals = useMemo(() => {
     const out = {}
     ALL_COLS.filter(c => c.filter === 'select').forEach(col => {
@@ -237,6 +233,10 @@ export default function Review() {
       })
       return merged
     })
+    // Stage 3 — filter by warnings if toggled
+    if (showOnlyWarnings) {
+      rows = rows.filter(r => r.has_warnings)
+    }
     if (globalSearch.trim()) {
       const q = globalSearch.toLowerCase()
       rows = rows.filter(r =>
@@ -266,25 +266,21 @@ export default function Review() {
       })
     }
     return rows
-  }, [cases, changes, globalSearch, colFilters, sortCol, sortDir])
+  }, [cases, changes, globalSearch, colFilters, sortCol, sortDir, showOnlyWarnings])
 
   const handleSort = (key) => {
     if (sortCol === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortCol(key); setSortDir('asc') }
   }
 
-  // Stage 2b: which fields can be edited. Mirrors backend EDITABLE_FIELDS
-  // so we don't open the modal for fields the backend will reject.
   const EDITABLE_FRONTEND = new Set([
     'institution_type', 'service_fee_type', 'package_type',
     'office', 'row_type', 'scheme', 'note_enrolled',
     'prior_month_rate', 'deferral', 'handover', 'target_owner',
     'targets_name', 'case_transition', 'presales_agent', 'incentive',
     'group_agent_name',
-    // Stage 2b: CRM data fields editable to fix imports
     'student_id', 'student_name', 'contract_id',
     'client_type', 'country', 'app_status', 'institution', 'system_type',
-    // Stage 2b: date fields
     'contract_date', 'visa_date', 'course_start',
   ])
   const canEdit = (field) => EDITABLE_FRONTEND.has(field)
@@ -317,7 +313,6 @@ export default function Review() {
   const startEdit = async (caseId, field, currentVal) => {
     if (!canEdit(field)) return
     const col = ALL_COLS.find(c => c.key === field)
-    // Stage 2b: pre-load reference data for this field's type if needed
     if (col?.ref) await loadReference(col.ref)
     setEditCell({ caseId, field })
     setEditVal(currentVal != null ? String(currentVal) : '')
@@ -365,7 +360,6 @@ export default function Review() {
     setEditCell(null)
   }
 
-  // Stage 2b: recalculate the whole report
   const handleRecalculate = async () => {
     if (recalculating) return
     setRecalculating(true)
@@ -373,11 +367,8 @@ export default function Review() {
     try {
       const result = await recalculateReport(id)
       setRecalcResult(result)
-      // Reload everything so the user sees the new bonus columns and totals
       const [r, c, t] = await Promise.all([getReport(id), getCases(id), getTrail(id)])
       setReport(r); setCases(c); setTrail(t)
-      // Validation may have changed too (bonuses are not validated, but
-      // edit state is — clear pending changes since they're now persisted)
       setChanges({})
     } catch (e) {
       console.error(e)
@@ -398,14 +389,16 @@ export default function Review() {
   const canApprove = missingRequired === 0 && blockingValidationCount === 0
     && ['manager','owner','admin'].includes(user?.role)
   const canSubmit  = missingRequired === 0 && blockingValidationCount === 0
-  // Recalculate works regardless of validation state — operator may want to
-  // see how their edits affected totals before fixing every red cell.
   const canRecalc  = !recalculating
     && !['approved','distributed'].includes(report?.status)
 
-  const clearFilters = () => { setGlobalSearch(''); setColFilters({}); setSortCol(null) }
+  const clearFilters = () => {
+    setGlobalSearch(''); setColFilters({}); setSortCol(null); setShowOnlyWarnings(false)
+  }
   const activeFilterCount =
-    Object.values(colFilters).filter(v => v !== '' && v != null).length + (globalSearch ? 1 : 0)
+    Object.values(colFilters).filter(v => v !== '' && v != null).length
+    + (globalSearch ? 1 : 0)
+    + (showOnlyWarnings ? 1 : 0)
 
   if (loading) return (
     <div style={{ display:'flex', justifyContent:'center', alignItems:'center', height:400 }}>
@@ -459,6 +452,20 @@ export default function Review() {
             </div>
           )}
 
+          {/* Stage 3 — engine warnings banner. Click to filter table to flagged cases. */}
+          {warningCount > 0 && (
+            <button onClick={() => setShowOnlyWarnings(v => !v)}
+              style={{ background: showOnlyWarnings ? '#d97706' : '#fef3c7',
+                border:`1px solid ${showOnlyWarnings ? '#b45309' : '#fbbf24'}`,
+                color: showOnlyWarnings ? '#fff' : '#92400e',
+                borderRadius:8, padding:'7px 12px', fontSize:12, cursor:'pointer',
+                fontWeight: showOnlyWarnings ? 700 : 500 }}
+              title="Click to toggle filter to flagged cases only">
+              🚩 {warningCount} engine warning{warningCount !== 1 ? 's' : ''}
+              {showOnlyWarnings ? ' (filtered)' : ''}
+            </button>
+          )}
+
           {missingRequired > 0 && (
             <div style={{ background:'#fef3c7', border:'1px solid #fde047', borderRadius:8,
               padding:'7px 12px', fontSize:12, color:'#92400e' }}>
@@ -466,7 +473,6 @@ export default function Review() {
             </div>
           )}
 
-          {/* Stage 2b: recalculate button */}
           <button className="btn btn-ghost"
             onClick={handleRecalculate}
             disabled={!canRecalc}
@@ -772,7 +778,6 @@ export default function Review() {
                   const s       = TYPE_STYLE[col.type]
                   const isGap   = col.key === 'gap'
 
-                  // Stage 2b: format for display. Dates show as DD/MM/YYYY.
                   let display = rawVal
                   if (col.isDate && rawVal) {
                     display = isoToDisplayDate(rawVal)
@@ -794,8 +799,13 @@ export default function Review() {
                     ? '2px solid var(--gold)'
                     : (vStyle ? `2px solid ${vStyle.border}` : '2px solid transparent')
 
-                  const cellTitle = vTooltip
-                    || (rawVal != null ? String(rawVal) : '')
+                  // Stage 3 — show engine warning tooltip on contract_id cell
+                  // when the case has an unresolved engine warning. Other cells
+                  // keep the original validation tooltip behaviour.
+                  const isContractCell = col.key === 'contract_id'
+                  const cellTitle = (isContractCell && c.has_warnings && c.warn_msg)
+                    ? c.warn_msg
+                    : (vTooltip || (rawVal != null ? String(rawVal) : ''))
 
                   return (
                     <td key={col.key}
@@ -814,6 +824,13 @@ export default function Review() {
                           : changed ? 'var(--gold-2)' : s.text,
                         whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
                       }}>
+                      {/* Stage 3 — engine warning flag on contract_id cell */}
+                      {isContractCell && c.has_warnings && (
+                        <span style={{ color:'#d97706', marginRight:4, fontSize:10, cursor:'help' }}
+                          title={c.warn_msg || 'Engine warning'}>
+                          🚩
+                        </span>
+                      )}
                       {changed && <span style={{ color:'var(--gold)', marginRight:3, fontSize:9 }}>✎</span>}
                       {!changed && vStatus === 'alias' && (
                         <span style={{ color:'#92400e', marginRight:3, fontSize:9 }}>⚠</span>
@@ -883,17 +900,13 @@ export default function Review() {
         </div>
       )}
 
-      {/* ── Edit modal — Stage 2b: dropdowns + date pickers ─────── */}
+      {/* ── Edit modal ──────────────────────────────────────── */}
       {editCell && (() => {
         const col = ALL_COLS.find(c => c.key === editCell.field)
         const needsComment = ENGINE_FIELDS.has(editCell.field)
         const refData = col?.ref ? referenceCache[col.ref] : null
         const isDate = col?.isDate
 
-        // Decide which input widget to render:
-        //   1. Date field → native <input type="date">
-        //   2. Field with reference data loaded → <select> dropdown
-        //   3. Anything else (text, number, free-form) → free text input
         let inputWidget = null
         if (isDate) {
           inputWidget = (
@@ -903,10 +916,6 @@ export default function Review() {
               onKeyDown={e => e.key === 'Escape' && setEditCell(null)} />
           )
         } else if (refData && refData.canonical) {
-          // Build the option list. For alias-aware types (client_type,
-          // institution), the alias map is shown as info but options are
-          // canonical only — saving an alias would just re-introduce the
-          // yellow flag.
           inputWidget = (
             <select value={editVal} onChange={e => setEditVal(e.target.value)}
               autoFocus={!needsComment}
@@ -929,11 +938,14 @@ export default function Review() {
           )
         }
 
-        // For dropdowns, hint at alias status if applicable
         const currentValidation = validation[editCell.caseId]?.[editCell.field]
         const aliasHint = currentValidation?.status === 'alias' && currentValidation.canonical
           ? `Current value "${currentValidation.current}" is a variant. Preferred: "${currentValidation.canonical}".`
           : null
+
+        // Stage 3 — show engine warning in edit modal so operator sees the issue
+        const editingCase = cases.find(c => c.id === editCell.caseId)
+        const caseWarning = editingCase?.has_warnings ? editingCase.warn_msg : null
 
         return (
           <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)',
@@ -954,6 +966,14 @@ export default function Review() {
                 <div style={{ fontSize:11, color:'#92400e', marginBottom:12,
                   background:'#fef9c3', padding:'6px 10px', borderRadius:6 }}>
                   ⚠ {aliasHint}
+                </div>
+              )}
+              {/* Stage 3 — engine warning shown in edit modal */}
+              {caseWarning && (
+                <div style={{ fontSize:11, color:'#92400e', marginBottom:12,
+                  background:'#fef3c7', padding:'8px 10px', borderRadius:6,
+                  border:'1px solid #fbbf24' }}>
+                  🚩 <strong>Engine warning on this case:</strong> {caseWarning}
                 </div>
               )}
               <div style={{ marginBottom:12 }}>

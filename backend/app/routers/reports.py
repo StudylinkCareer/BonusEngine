@@ -148,6 +148,9 @@ def _case_to_dict(c: BonusReportCase) -> Dict[str, Any]:
         "note_priority_2":    c.note_priority_2,
         "gap":                c.gap,
         "section":            c.section,
+        # Stage 3 — engine warnings for operator review
+        "has_warnings":       bool(c.has_warnings),
+        "warn_msg":           c.warn_msg,
     }
 
 
@@ -286,6 +289,9 @@ async def upload_report(
                     "note_enrolled_2":    c.note_enrolled2,
                     "note_priority":      c.note_priority,
                     "note_priority_2":    c.note_priority2,
+                    # Stage 3 — Option B data quality flags
+                    "has_warnings":       bool(getattr(c, 'warn_flags', None)),
+                    "warn_msg":           " | ".join(c.warn_flags) if getattr(c, 'warn_flags', None) else None,
                     "section":            "enrolled" if counts_enrolled else "closed",
                 })
             print(f"[UPLOAD DEBUG] Cases from engine: {len(parsed_cases)}")
@@ -360,6 +366,9 @@ async def upload_report(
             note_enrolled_2    = cdata["note_enrolled_2"],
             note_priority      = cdata["note_priority"],
             note_priority_2    = cdata["note_priority_2"],
+            # Stage 3 — persist engine warnings
+            has_warnings       = cdata.get("has_warnings", False),
+            warn_msg           = cdata.get("warn_msg"),
             section            = cdata["section"],
         )
         db.add(case)

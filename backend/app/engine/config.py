@@ -7,7 +7,7 @@
 #   PATCH 2: base_rates inject flat keys "out_sys_co" / "out_sys_coun" per scheme
 #            (sourced from ref_base_rates rows where tier='OUT_SYS')
 #   PATCH 3: base_rates inject flat key "rmit_vn" for CO_SUB scheme
-#            (sourced from ref_special_rates rate_code='RMIT_VN_SUB').
+#            (sourced from ref_special_rates rate_code='RMIT_VN_SUB')
 # =============================================================================
 
 import json
@@ -88,6 +88,27 @@ class PriorityInstitutionObj:
 
 
 @dataclass
+class PriorityPromotionObj:
+    """A date-bounded factor change for a priority partner.
+
+    By default, priority bonus = base × bonus_pct × 0.5 (the historical
+    baseline). When a promotion is in effect, the factor changes to
+    whatever the promotion specifies (typically 1.0 for "full" priority).
+
+    Promotions are bounded by both effective_from and effective_to.
+    Promotions don't cross years — if a promotion spans years, two rows
+    are created (one per year). At most one row should match a given
+    (partner, year, report_period) — overlap is rejected at save time.
+    """
+    institution_name: str          # Match against case institution
+    year: int                      # Calendar year the promotion belongs to
+    effective_from: date           # Promotion start date (inclusive)
+    effective_to: date             # Promotion end date (inclusive)
+    factor: float = 0.5            # 0.5 = baseline, 1.0 = full priority
+    note: str = ""                 # Optional reason
+
+
+@dataclass
 class SpecialRateObj:
     rate_code: str
     scheme: str
@@ -134,6 +155,8 @@ class BonusConfig:
         self.skip_labels:       frozenset                        = SKIP_LABELS
         self.master_agents:     List[str]                        = []
         self.priority_instns:   List[PriorityInstitutionObj]     = []
+        self.priority_promotions: List[PriorityPromotionObj]     = []
+        self.internal_agent_patterns: List[str]                  = []
         self.kpi_weights:       list                             = []  # KpiWeightObj list, sorted by priority asc
         self.base_rates:        Dict[str, Dict[str, Dict[str, int]]] = {}
         # scheme → tier → role → amount
@@ -401,6 +424,37 @@ class BonusConfig:
 # PRIMARY LOADER — reads from PostgreSQL, zero hardcoding
 # =============================================================================
 
+def _validate_no_promotion_overlaps(promos):
+    """Refuse to load if any two promotion rows for the same (partner, year)
+    have overlapping effective_from–effective_to ranges.
+
+    Adjacent rows (one ends, next begins next day) are fine. Any shared
+    day between two rows is an error.
+
+    Raises ValueError with details of the conflict.
+    """
+    from collections import defaultdict
+    by_key = defaultdict(list)
+    for r in promos:
+        if not (r.effective_from and r.effective_to and r.year): continue
+        by_key[(r.institution_name.lower(), r.year)].append(r)
+    for key, rows in by_key.items():
+        if len(rows) < 2: continue
+        # Sort by effective_from and pairwise check
+        rows = sorted(rows, key=lambda x: x.effective_from)
+        for i in range(len(rows) - 1):
+            a, b = rows[i], rows[i+1]
+            if b.effective_from <= a.effective_to:
+                raise ValueError(
+                    f"Priority promotion overlap detected for "
+                    f"{a.institution_name} ({a.year}): "
+                    f"row id={a.id} ({a.effective_from} → {a.effective_to}) "
+                    f"overlaps with row id={b.id} "
+                    f"({b.effective_from} → {b.effective_to}). "
+                    f"Resolve in ref_priority_promotions before recalculating."
+                )
+
+
 def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
     """
     Load BonusConfig from PostgreSQL reference tables.
@@ -560,6 +614,53 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
                 achieved_ytd=ytd,
                 year=r.year or 0,
             ))
+
+    # ── Priority Promotions — from ref_priority_promotions ──────────────────
+    # Date-bounded factor changes for priority partners. The default factor
+    # is 0.5 (the historical baseline). Promotions override this for the
+    # period between effective_from and effective_to (both inclusive).
+    # Example: RMIT was promoted from 0.5 to 1.0 effective 2024-02-01
+    # through 2024-12-31.
+    try:
+        from ..models import PriorityPromotion
+        promos = db.query(PriorityPromotion).filter(
+                PriorityPromotion.is_active==True).all()
+
+        # Engine load-time overlap check: refuse to load if any two rows
+        # for the same (partner, year) have overlapping date ranges.
+        _validate_no_promotion_overlaps(promos)
+
+        for r in promos:
+            cfg.priority_promotions.append(PriorityPromotionObj(
+                institution_name=r.institution_name,
+                year=r.year,
+                effective_from=r.effective_from,
+                effective_to=r.effective_to,
+                factor=r.factor,
+                note=r.note or "",
+            ))
+    except Exception as e:
+        # If the table doesn't exist OR overlap is detected, fail loudly:
+        # priority_promotions is now load-bearing for correct calculations.
+        if "overlap" in str(e).lower():
+            raise
+        cfg.priority_promotions = []
+
+    # ── Internal Agents — from ref_internal_agents ──────────────────────────
+    # Patterns that identify StudyLink-internal agent names. When a case's
+    # Refer Source Agent contains one of these patterns (lowercased
+    # substring match), the case is treated as direct, not agent-referred.
+    # Falls back to the legacy hardcoded list if the table doesn't exist
+    # yet — preserves backwards compatibility during deployment.
+    try:
+        from ..models import InternalAgent
+        rows = db.query(InternalAgent).filter(
+                InternalAgent.is_active==True).all()
+        cfg.internal_agent_patterns = [r.pattern.lower() for r in rows]
+    except Exception:
+        # Fallback to legacy hardcoded list — same as before this migration
+        cfg.internal_agent_patterns = ["studylink", "study link",
+                                        "van phong", "văn phòng"]
 
     # ── KPI Weights — from ref_kpi_weights ───────────────────────────────────
     # Apr 2026: weights moved from hardcoded constants in get_kpi_weight()

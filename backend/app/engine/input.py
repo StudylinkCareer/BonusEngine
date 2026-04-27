@@ -263,12 +263,16 @@ def parse_crm_report(file_path: str, cfg: BonusConfig
         c.is_flat_country  = cr.is_flat_country
         c.is_vietnam       = cr.is_vietnam
         c.client_type_code = cfg.get_client_type_code(ct_text)
-        # Detect agent-referred: external (non-StudyLink) agent in Refer Source Agent
-        # field gives KPI weight 0.7 per 06_CLIENT_WEIGHTS sub-referral rule
+        # Detect agent-referred: external (non-StudyLink) agent in Refer
+        # Source Agent field gives KPI weight 0.7 per 06_CLIENT_WEIGHTS
+        # sub-referral rule, AND blocks priority bonus on direct schemes.
+        # Internal-agent patterns are loaded from ref_internal_agents
+        # (see cfg.internal_agent_patterns). The team can add new
+        # internal office patterns there without code changes.
         agent_lower = c.agent.lower()
-        _sl = ("studylink", "study link", "van phong", "văn phòng")
         c.is_agent_referred = (bool(c.agent) and len(c.agent) > 2 and
-                               not any(x in agent_lower for x in _sl))
+                               not any(x in agent_lower
+                                       for x in cfg.internal_agent_patterns))
 
         # ── V2 (30-column FIXED format) field population ─────────────────────
         # When V2 columns are present in the file, their explicit values

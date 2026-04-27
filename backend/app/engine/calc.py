@@ -9,7 +9,7 @@
 #   6. Step 6: partner case (** or * in institution) → 400k
 #   7. Step 7/8: base_rate set AFTER split, BEFORE package
 #   8. Carry-over: always 50% of prior month rate
-#   9. Priority: uses c.base_rate (pre-package), not c.bonus_enrolled.
+#   9. Priority: uses c.base_rate (pre-package), not c.bonus_enrolled
 #
 # Plus: keyword-based package resolution from today's session — _apply_package
 # calls cfg.resolve_service_code() before get_service_fee() so display strings
@@ -145,7 +145,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         derived_base = rates.get(rate_key, rates.get(resolved_tier, rates.get(TIER_UNDER, 800_000)))
         c.base_rate = derived_base
         c.note_enrolled = f"Management override: {c.prior_month_rate:,.0f}"
-        _apply_priority(c, cfg, year)
+        _apply_priority(c, cfg, year, month, scheme)
         return
 
     # Pending add-on amount captured from Step 2.8b when applies_as=ADD.
@@ -242,7 +242,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         # so priority is calculated on the same 50% notional that the
         # enrolled bonus is on.
         c.base_rate = c.bonus_enrolled
-        _apply_priority(c, cfg, year)
+        _apply_priority(c, cfg, year, month, scheme)
         _apply_advance_offset(c, sr); return
 
     # ── STEP 5: CountsAsEnrolled gate ──────────────────────────────────────────
@@ -392,7 +392,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
                   else f"{pending_addon_label}: +{payout:,.0f}")
         c.note_enrolled = (c.note_enrolled + " | " + suffix).strip(" | ")
 
-    _apply_priority(c, cfg, year)
+    _apply_priority(c, cfg, year, month, scheme)
     _apply_advance_offset(c, sr)
 
 
@@ -421,56 +421,122 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
                 ).strip(" | ")
 
 
-def _apply_priority(c: CaseRecord, cfg: BonusConfig, year: int = 0) -> None:
+def _apply_priority(c: CaseRecord, cfg: BonusConfig,
+                     year: int = 0, month: int = 0,
+                     scheme: str = "") -> None:
     """Priority bonus calculation.
 
     For each case at a priority partner institution:
         bonus_priority = base_rate × bonus_pct × factor
 
-    Apr 2026: priority partnerships are now annual decisions (the bonus_pct,
-    annual_target, etc. can change year over year, including dropping to 0%
-    for a year). Lookup is by (institution_name, year) — when the case's
-    year doesn't match any partner row, no priority bonus is paid.
+    Policy (Apr 2026 v3, table-driven):
+      • Status gate: only paid on cases that count as enrolled. Cancellations,
+        visa refusals, and visa-only cases get base_rate (cancellation fee
+        retention) but no priority.
+      • Sub-agent gate: cases with is_agent_referred=True don't get priority
+        UNLESS the staff scheme is CO_SUB. CO Direct staff don't get priority
+        on agent-referred cases (the agent took the commission). CO Sub
+        staff DO get priority — handling sub-agent referrals is their job.
+      • Year gate: priority_instns has annual rows. bonus_pct=0 for the year
+        means no priority is paid (e.g., 2025 partnerships zeroed across the
+        board).
+      • Factor: derived from priority_promotions table by (partner, month).
+        Default factor = 0.5 (historical baseline). Promotions override.
 
-    Factor source (in priority order):
-      1. c.priority_factor (per-case override from v7 input). Use this when
-         the báo cáo author has recorded an explicit factor for this case.
-      2. Derived from priority_instns: 1.0 if achieved_ytd >= annual_target,
-         else 0.5. Only used when achieved_ytd is populated (> 0) so we
-         have actual YTD tracking data.
-
-    If neither signal is present, the engine pays NO priority bonus. This
-    avoids the previous behavior of assuming 50% factor when no data was
-    available (which over-paid priority on cases where the partnership had
-    ended or never paid priority for that staff).
+    Per-case override (c.priority_factor) wins over all of above — used
+    for documented exceptions like discount packages and handovers.
     """
     if c.base_rate <= 0: return
+    # Status gate — only enrolled cases
+    sr = cfg.get_status_rule(c.app_status)
+    if not sr.counts_as_enrolled:
+        return
+    # Sub-agent gate — direct-scheme staff don't get priority on agent
+    # referrals. CO Sub staff are exempt from this gate because referrals
+    # are their core work.
+    #
+    # Per business rule (clarified Apr 2026): the Refer Agent field
+    # identifies StudyLink's role in the case from StudyLink's perspective.
+    #   - CO Direct staff cases: Refer Agent should be StudyLink-internal
+    #     (the team enters StudyLink/VP-Mel/văn phòng-... in the field).
+    #   - CO Sub staff cases: Refer Agent names the external sub-agency.
+    #
+    # So when we see CO Direct + external agent, that's a data quality
+    # issue, NOT a legitimate case configuration. We refuse priority
+    # (conservative — under-pay rather than over-pay) AND flag the case
+    # so the operator can either correct the agent field or set an
+    # explicit per-case override.
+    if c.is_agent_referred and scheme != SCHEME_CO_SUB and c.priority_factor <= 0:
+        c.add_warning(
+            f"Priority not paid: Refer Agent '{c.agent}' looks external but "
+            f"staff scheme is {scheme} (Direct). For CO Direct cases the "
+            f"Refer Agent should be StudyLink or an internal office. "
+            f"Either correct the Refer Agent or set a per-case priority "
+            f"factor override if this case is a legitimate exception."
+        )
+        return
     inst_lower = c.institution.lower()
     for p in cfg.priority_instns:
-        # Year-aware match: skip rows for a different year. A row with year=0
-        # (legacy / not yet migrated) matches any year — backwards compatible.
         if year and p.year and p.year != year:
             continue
         if p.name.lower() in inst_lower or inst_lower in p.name.lower():
-            # When bonus_pct is 0 (e.g., 2025 partnerships zeroed out), there
-            # is nothing to pay regardless of factor.
             if p.bonus_pct == 0:
                 return
-            if c.priority_factor > 0:
-                af = c.priority_factor
-                source = "v7 input"
-            elif p.achieved_ytd > 0:
-                # YTD data populated — derive factor from target progress
-                af = 1.0 if p.achieved_ytd >= p.annual_target else 0.5
-                source = f"YTD {p.achieved_ytd}/{p.annual_target}"
-            else:
-                # No factor signal at all — pay no priority bonus
+            af, source = _lookup_priority_factor(c, p, cfg, year, month)
+            if af <= 0:
                 return
             af_pct = int(af * 100)
             c.bonus_priority = int(c.base_rate * p.bonus_pct * af)
             c.note_priority  = f"Them {p.bonus_pct*100:.0f}% bonus cho {p.name}"
             c.note_priority2 = f"Factor {af_pct}% (source: {source})"
             break
+
+
+def _lookup_priority_factor(c: CaseRecord,
+                             p: 'PriorityInstitutionObj',
+                             cfg: BonusConfig,
+                             year: int = 0,
+                             month: int = 0) -> tuple:
+    """Decide the priority factor for one case at one priority partner.
+
+    Returns (factor, source_description).
+
+    Priority order:
+      1. c.priority_factor > 0  → per-case override (v7 input). Used for
+         documented exceptions like discount packages and handovers.
+      2. Promotions table       → row where year matches AND
+         effective_from <= report_period <= effective_to. At most one
+         row should match per partner per period (overlap-prevention is
+         enforced at save time and at engine load time).
+      3. Default 0.5            → the historical baseline.
+
+    The report period is built from year+month parameters (the báo cáo
+    being processed). This is the right anchor because promotions reflect
+    when the bonus is being paid, not when the case was originally signed.
+    """
+    # 1. Per-case override
+    if c.priority_factor > 0:
+        return c.priority_factor, "v7 input"
+
+    # 2. Promotions table — find the row that brackets the report period
+    if year and month and cfg.priority_promotions:
+        from datetime import date
+        report_period = date(year, month, 1)
+        inst_lower = c.institution.lower()
+        for pr in cfg.priority_promotions:
+            if pr.year != year:
+                continue
+            pn = pr.institution_name.lower()
+            if not (pn in inst_lower or inst_lower in pn):
+                continue
+            if pr.effective_from <= report_period <= pr.effective_to:
+                return pr.factor, (
+                    f"promotion {pr.effective_from.isoformat()} "
+                    f"to {pr.effective_to.isoformat()}"
+                )
+
+    # 3. Default baseline
+    return 0.5, "default 50%"
 
 
 def _apply_advance_offset(c: CaseRecord, sr: StatusRule) -> None:

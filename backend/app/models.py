@@ -720,6 +720,8 @@ class BonusReportCase(Base):
     note_priority      = Column(Text)
     note_priority_2    = Column(Text)
     gap                = Column(Integer, default=0)
+    has_warnings     = Column(Boolean, default=False)
+    warn_msg         = Column(Text)
     section            = Column(String(20))
     report = relationship("BonusReport", back_populates="cases")
     __table_args__ = (
@@ -743,3 +745,49 @@ class BonusFieldChange(Base):
     comment     = Column(Text)
     changed_by  = Column(String(100), nullable=False)
     changed_at  = Column(DateTime, default=datetime.utcnow)
+
+class PriorityPromotion(Base):
+    """
+    ref_priority_promotions — date-bounded factor changes for priority partners.
+
+    A "promotion" overrides the default 0.5 factor for a partner during a
+    specific date range. Multiple rows per (partner, year) are allowed
+    (e.g., promoted Feb–Apr, demoted May–Jul, promoted again Aug–Dec) but
+    they must NOT have overlapping date ranges. Overlap rejection happens
+    at engine load time.
+
+    Promotions don't cross years — if a promotion spans years, create two
+    rows (one per year).
+    """
+    __tablename__ = "ref_priority_promotions"
+    id                = Column(Integer, primary_key=True)
+    institution_name  = Column(String(200), nullable=False)
+    year              = Column(Integer,     nullable=False)
+    effective_from    = Column(Date,        nullable=False)
+    effective_to      = Column(Date,        nullable=False)
+    factor            = Column(Float,       nullable=False, default=0.5)
+    note              = Column(Text)
+    is_active         = Column(Boolean,     nullable=False, default=True)
+    created_at        = Column(DateTime,    default=datetime.utcnow)
+    created_by        = Column(String(100))
+    updated_at        = Column(DateTime)
+
+
+class InternalAgent(Base):
+    """
+    ref_internal_agents — patterns for identifying StudyLink-internal agents.
+
+    When a case's Refer Source Agent contains one of these patterns
+    (case-insensitive substring match), the case is treated as direct
+    (not externally agent-referred) for priority bonus purposes.
+
+    Replaces the previously-hardcoded regex in input.py.
+    """
+    __tablename__ = "ref_internal_agents"
+    id           = Column(Integer, primary_key=True)
+    pattern      = Column(String(100), nullable=False)
+    note         = Column(Text)
+    is_active    = Column(Boolean,     nullable=False, default=True)
+    created_at   = Column(DateTime,    default=datetime.utcnow)
+    created_by   = Column(String(100))
+    updated_at   = Column(DateTime)

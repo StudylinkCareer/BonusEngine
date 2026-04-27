@@ -147,6 +147,19 @@ def recalculate_report(db: Session, report: BonusReport,
         db_case.note_priority   = calc.note_priority
         db_case.note_priority_2 = calc.note_priority2
 
+        # Persist engine warnings (Stage 3 — Option B data quality flags).
+        # warn_flags is a list of strings emitted by case-level rules
+        # (e.g., the priority sub-agent gate when CO Direct + external
+        # agent). We join them and store on the row so the frontend can
+        # display them inline on the Review page.
+        warns = getattr(calc, "warn_flags", None) or []
+        if warns:
+            db_case.has_warnings = True
+            db_case.warn_msg     = " | ".join(warns)
+        else:
+            db_case.has_warnings = False
+            db_case.warn_msg     = None
+
         if old_enr != new_enr or old_pri != new_pri:
             cases_updated += 1
             diffs.append({
