@@ -24,6 +24,10 @@ export const getValidation = (id) =>
 export const getReferenceList = (refType) =>
   api.get(`/reports/reference/${refType}`).then(r => r.data)
 
+// ── NEW (Stage 2b): recalculation ────────────────────────────────────────
+export const recalculateReport = (id) =>
+  api.post(`/reports/${id}/recalculate`).then(r => r.data)
+
 export const uploadReport = (file, staffName, month, year, office, notes = '') => {
   const form = new FormData()
   form.append('file', file)

@@ -1,28 +1,34 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../api/AuthProvider.jsx'
-import { getReport, getCases, getTrail, updateField, approveReport, returnReport, submitReport, getValidation } from '../api/client.js'
+import {
+  getReport, getCases, getTrail, updateField,
+  approveReport, returnReport, submitReport,
+  getValidation, getReferenceList, recalculateReport,
+} from '../api/client.js'
 
 const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
 /* ── Master column list ───────────────────────────────────────────
    All 42 columns from the Input Template plus engine additions.
-   type: crm | engine | input
-   filter: text | select | number                                  */
+   type:   crm | engine | input
+   filter: text | select | number | date
+   ref:    reference type for backend dropdowns (omit if not applicable)
+   isDate: true for fields stored/edited as ISO date strings              */
 const ALL_COLS = [
   // ── CRM Data (green) ─────────────────────────────────────────
   { key:'contract_id',        vn:'Mã hợp đồng',                 en:'Contract ID',                   type:'crm',    w:120, filter:'text'   },
   { key:'student_name',       vn:'Tên học sinh',                 en:'Student Name',                  type:'crm',    w:180, filter:'text'   },
   { key:'student_id',         vn:'Mã học sinh',                  en:'Student ID',                    type:'crm',    w:100, filter:'text'   },
-  { key:'contract_date',      vn:'Ngày ký HĐ',                   en:'Contract Signed Date',          type:'crm',    w:130, filter:'text'   },
-  { key:'client_type',        vn:'Loại khách hàng',              en:'Client Type',                   type:'crm',    w:180, filter:'select' },
-  { key:'country',            vn:'Quốc gia du học',              en:'Country of Study',              type:'crm',    w:110, filter:'select' },
+  { key:'contract_date',      vn:'Ngày ký HĐ',                   en:'Contract Signed Date',          type:'crm',    w:130, filter:'date',   isDate:true },
+  { key:'client_type',        vn:'Loại khách hàng',              en:'Client Type',                   type:'crm',    w:180, filter:'select', ref:'client_type' },
+  { key:'country',            vn:'Quốc gia du học',              en:'Country of Study',              type:'crm',    w:110, filter:'select', ref:'country' },
   { key:'refer_agent',        vn:'Đại lý giới thiệu',            en:'Refer Source Agent',            type:'crm',    w:200, filter:'text'   },
-  { key:'system_type',        vn:'Hệ thống',                     en:'System Type',                   type:'crm',    w:130, filter:'select' },
-  { key:'app_status',         vn:'Trạng thái hồ sơ',            en:'Application Report Status',     type:'crm',    w:240, filter:'select' },
-  { key:'visa_date',          vn:'Ngày nhận visa',               en:'Visa Received Date',            type:'crm',    w:130, filter:'text'   },
-  { key:'institution',        vn:'Tên trường',                   en:'Institution Name',              type:'crm',    w:220, filter:'text'   },
-  { key:'course_start',       vn:'Ngày bắt đầu khóa học',       en:'Course Start Date',             type:'crm',    w:130, filter:'text'   },
+  { key:'system_type',        vn:'Hệ thống',                     en:'System Type',                   type:'crm',    w:130, filter:'select', ref:'system_type' },
+  { key:'app_status',         vn:'Trạng thái hồ sơ',            en:'Application Report Status',     type:'crm',    w:240, filter:'select', ref:'app_status' },
+  { key:'visa_date',          vn:'Ngày nhận visa',               en:'Visa Received Date',            type:'crm',    w:130, filter:'date',   isDate:true },
+  { key:'institution',        vn:'Tên trường',                   en:'Institution Name',              type:'crm',    w:220, filter:'text',   ref:'institution' },
+  { key:'course_start',       vn:'Ngày bắt đầu khóa học',       en:'Course Start Date',             type:'crm',    w:130, filter:'date',   isDate:true },
   { key:'course_status',      vn:'Tình trạng khóa học',          en:'Course Status',                 type:'crm',    w:120, filter:'select' },
   { key:'counsellor_name',    vn:'Tên tư vấn viên',              en:'Counsellor Name',               type:'crm',    w:170, filter:'text'   },
   { key:'case_officer_name',  vn:'Tên case officer',             en:'Case Officer Name',             type:'crm',    w:170, filter:'text'   },
@@ -30,18 +36,18 @@ const ALL_COLS = [
   { key:'customer_incentive', vn:'Mức ưu đãi (VND)',             en:'Customer Incentive (VND)',      type:'crm',    w:160, filter:'number', mono:true },
   { key:'notes',              vn:'Ghi chú',                      en:'Notes',                         type:'crm',    w:200, filter:'text'   },
   // ── Engine Classified (blue) ──────────────────────────────────
-  { key:'service_fee_type',   vn:'Mã phí dịch vụ',              en:'Service Fee Type',              type:'engine', w:150, filter:'select' },
-  { key:'deferral',           vn:'Mã hoãn/miễn',                en:'Deferral / Waiver',             type:'input',  w:130, filter:'select' },
-  { key:'package_type',       vn:'Loại gói dịch vụ',            en:'Package Type',                  type:'engine', w:200, filter:'select' },
-  { key:'office',             vn:'Văn phòng',                    en:'Office Override',               type:'engine', w:110, filter:'select' },
-  { key:'handover',           vn:'Bàn giao',                     en:'Handover',                      type:'input',  w:90,  filter:'select' },
+  { key:'service_fee_type',   vn:'Mã phí dịch vụ',              en:'Service Fee Type',              type:'engine', w:150, filter:'select', ref:'service_fee_type' },
+  { key:'deferral',           vn:'Mã hoãn/miễn',                en:'Deferral / Waiver',             type:'input',  w:130, filter:'select', ref:'deferral' },
+  { key:'package_type',       vn:'Loại gói dịch vụ',            en:'Package Type',                  type:'engine', w:200, filter:'select', ref:'package_type' },
+  { key:'office',             vn:'Văn phòng',                    en:'Office Override',               type:'engine', w:110, filter:'select', ref:'office' },
+  { key:'handover',           vn:'Bàn giao',                     en:'Handover',                      type:'input',  w:90,  filter:'select', ref:'handover' },
   { key:'target_owner',       vn:'Chủ hồ sơ (nếu bàn giao)',   en:'Target Owner',                  type:'input',  w:160, filter:'text'   },
-  { key:'case_transition',    vn:'Chuyển hồ sơ',                en:'Case Transition',               type:'input',  w:120, filter:'select' },
+  { key:'case_transition',    vn:'Chuyển hồ sơ',                en:'Case Transition',               type:'input',  w:120, filter:'select', ref:'case_transition' },
   { key:'prior_month_rate',   vn:'Mức bonus tháng trước (VND)', en:'Prior Month Rate (VND)',        type:'input',  w:170, filter:'number' },
-  { key:'institution_type',   vn:'Loại cơ sở đào tạo',          en:'Institution Type',              type:'engine', w:150, filter:'select' },
+  { key:'institution_type',   vn:'Loại cơ sở đào tạo',          en:'Institution Type',              type:'engine', w:150, filter:'select', ref:'institution_type' },
   { key:'group_agent_name',   vn:'Tên đại lý nhóm',             en:'Group / Master Agent Name',     type:'engine', w:180, filter:'text'   },
   { key:'targets_sheet_name', vn:'Tên trong bảng chỉ tiêu',     en:'Targets Sheet Name',            type:'engine', w:160, filter:'text'   },
-  { key:'row_type',           vn:'Loại dòng',                    en:'Row Type (BASE/ADDON)',          type:'engine', w:130, filter:'select' },
+  { key:'row_type',           vn:'Loại dòng',                    en:'Row Type (BASE/ADDON)',          type:'engine', w:130, filter:'select', ref:'row_type' },
   { key:'addon_code',         vn:'Mã ADDON',                    en:'Add-on Service Code',           type:'engine', w:140, filter:'text'   },
   { key:'addon_count',        vn:'Số lượng ADDON',              en:'Add-on Count',                  type:'engine', w:110, filter:'number', mono:true },
   // ── Engine additions ──────────────────────────────────────────
@@ -75,21 +81,25 @@ const INPUT_FIELDS = new Set([
   'prior_month_rate','deferral','handover','target_owner','case_transition',
 ])
 
-// ── NEW (Stage 2a): validation status → cell styling ─────────────────────────
-// The backend's /validation endpoint returns one of: ok | alias | missing | unknown
-// per (case, field). These styles colour the cell background accordingly.
-//
-//   ok      → no highlight (default cell background applies)
-//   alias   → soft yellow — value is acceptable but a canonical preferred form
-//             exists. Operator is encouraged but not forced to update.
-//   missing → soft red — mandatory field is empty. Blocks submission.
-//   unknown → soft red — value is not in the canonical or alias list. Blocks
-//             submission once Stage 2c lands.
+// Cell colouring based on validation status (Stage 2a).
 const VALIDATION_STYLE = {
-  alias:   { bg:'#fef9c3', border:'#fde047' },  // yellow-100 / yellow-300
-  missing: { bg:'#fee2e2', border:'#fca5a5' },  // red-100 / red-300
-  unknown: { bg:'#fee2e2', border:'#fca5a5' },  // red-100 / red-300
+  alias:   { bg:'#fef9c3', border:'#fde047' },
+  missing: { bg:'#fee2e2', border:'#fca5a5' },
+  unknown: { bg:'#fee2e2', border:'#fca5a5' },
 }
+
+// ── Stage 2b: format helpers for date display ──────────────────────────────
+// CRM data and the engine speak ISO ("2025-09-15"). Vietnamese readers
+// expect DD/MM/YYYY. The conversions below are display-only — the value
+// stored in the DB stays ISO.
+const isoToDisplayDate = (iso) => {
+  if (!iso) return ''
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return iso  // not ISO — show as-is (legacy data)
+  return `${m[3]}/${m[2]}/${m[1]}`
+}
+// Native <input type="date"> emits and consumes ISO. No conversion needed
+// for the input itself, only for the display cell.
 
 export default function Review() {
   const { id }   = useParams()
@@ -107,11 +117,18 @@ export default function Review() {
   const [submitting,   setSubmitting]   = useState(false)
   const [loading,      setLoading]      = useState(true)
 
-  // NEW (Stage 2a): per-cell validation state
-  // Shape: { caseId: { fieldName: { status, current, canonical, canonical_code } } }
-  // Populated on page load and after each successful field update.
+  // Stage 2a: validation state
   const [validation, setValidation] = useState({})
   const [validationSummary, setValidationSummary] = useState(null)
+
+  // Stage 2b: reference data cache for dropdowns. Loaded lazily on first
+  // edit attempt for each ref type. Shape:
+  //   { client_type: { canonical: [...], aliases: {...} }, ... }
+  const [referenceCache, setReferenceCache] = useState({})
+
+  // Stage 2b: recalculation state
+  const [recalculating, setRecalculating] = useState(false)
+  const [recalcResult, setRecalcResult] = useState(null)  // last recalc summary
 
   // Search / sort / filter
   const [globalSearch, setGlobalSearch] = useState('')
@@ -120,7 +137,7 @@ export default function Review() {
   const [colFilters,   setColFilters]   = useState({})
   const [showFilters,  setShowFilters]  = useState(false)
 
-  // Column management — order and visibility
+  // Column management
   const [colOrder,     setColOrder]     = useState(() => ALL_COLS.map(c => c.key))
   const [hiddenCols,   setHiddenCols]   = useState(() => new Set())
   const [showColMgr,   setShowColMgr]   = useState(false)
@@ -132,7 +149,6 @@ export default function Review() {
 
   useEffect(() => { fetchReport() }, [id])
 
-  // Close column manager on outside click
   useEffect(() => {
     const handler = e => {
       if (colMgrRef.current && !colMgrRef.current.contains(e.target)) setShowColMgr(false)
@@ -145,9 +161,6 @@ export default function Review() {
     try {
       const [r, c, t] = await Promise.all([getReport(id), getCases(id), getTrail(id)])
       setReport(r); setCases(c); setTrail(t)
-
-      // Stage 2a: load validation in the background. Don't block the page on it —
-      // if validation fails or is slow, the table still renders without colouring.
       try {
         const v = await getValidation(id)
         const byCaseId = {}
@@ -163,11 +176,23 @@ export default function Review() {
     finally { setLoading(false) }
   }
 
-  // Active columns = ordered + not hidden
+  // Stage 2b: load reference list for a field's ref type, cached per type
+  const loadReference = async (refType) => {
+    if (!refType) return null
+    if (referenceCache[refType]) return referenceCache[refType]
+    try {
+      const data = await getReferenceList(refType)
+      setReferenceCache(prev => ({ ...prev, [refType]: data }))
+      return data
+    } catch (e) {
+      console.warn(`Reference load failed for ${refType}:`, e)
+      return null
+    }
+  }
+
   const COLS = useMemo(() =>
-    colOrder
-      .map(key => ALL_COLS.find(c => c.key === key))
-      .filter(c => c && !hiddenCols.has(c.key)),
+    colOrder.map(key => ALL_COLS.find(c => c.key === key))
+            .filter(c => c && !hiddenCols.has(c.key)),
     [colOrder, hiddenCols]
   )
 
@@ -179,31 +204,20 @@ export default function Review() {
   }
   const hasChange = (caseId, field) => !!changes[`${caseId}_${field}`]
 
-  // NEW (Stage 2a): get validation status for a (case, field) pair.
-  // Returns one of "ok" | "alias" | "missing" | "unknown" | null
-  // null when validation hasn't loaded or this field isn't validated.
   const getValidationStatus = (caseId, field) => {
     return validation[caseId]?.[field]?.status ?? null
   }
-
-  // NEW (Stage 2a): get a tooltip describing the validation issue.
-  // Used as the cell's title attribute on hover.
   const getValidationTooltip = (caseId, field) => {
     const v = validation[caseId]?.[field]
     if (!v) return null
     if (v.status === 'alias' && v.canonical) {
       return `Acceptable variant — preferred form is "${v.canonical}"`
     }
-    if (v.status === 'missing') {
-      return 'Required field is empty'
-    }
-    if (v.status === 'unknown') {
-      return `"${v.current}" is not a recognised value for this field`
-    }
+    if (v.status === 'missing') return 'Required field is empty'
+    if (v.status === 'unknown') return `"${v.current}" is not a recognised value for this field`
     return null
   }
 
-  // Unique values for select dropdowns
   const uniqueVals = useMemo(() => {
     const out = {}
     ALL_COLS.filter(c => c.filter === 'select').forEach(col => {
@@ -214,7 +228,6 @@ export default function Review() {
     return out
   }, [cases])
 
-  // Filtered + sorted rows
   const displayCases = useMemo(() => {
     let rows = cases.map(c => {
       const merged = { ...c }
@@ -260,8 +273,21 @@ export default function Review() {
     else { setSortCol(key); setSortDir('asc') }
   }
 
-  const canEdit = (field) =>
-    !['contract_id', 'bonus_enrolled', 'bonus_priority', 'gap', 'base_rate'].includes(field)
+  // Stage 2b: which fields can be edited. Mirrors backend EDITABLE_FIELDS
+  // so we don't open the modal for fields the backend will reject.
+  const EDITABLE_FRONTEND = new Set([
+    'institution_type', 'service_fee_type', 'package_type',
+    'office', 'row_type', 'scheme', 'note_enrolled',
+    'prior_month_rate', 'deferral', 'handover', 'target_owner',
+    'targets_name', 'case_transition', 'presales_agent', 'incentive',
+    'group_agent_name',
+    // Stage 2b: CRM data fields editable to fix imports
+    'student_id', 'student_name', 'contract_id',
+    'client_type', 'country', 'app_status', 'institution', 'system_type',
+    // Stage 2b: date fields
+    'contract_date', 'visa_date', 'course_start',
+  ])
+  const canEdit = (field) => EDITABLE_FRONTEND.has(field)
 
   const handleDragStart = (e, key) => { setDragKey(key); e.dataTransfer.effectAllowed = 'move' }
   const handleDragOver  = (e, key) => { e.preventDefault(); setDragOverKey(key) }
@@ -288,8 +314,11 @@ export default function Review() {
   const showAll    = () => setHiddenCols(new Set())
   const resetOrder = () => setColOrder(ALL_COLS.map(c => c.key))
 
-  const startEdit = (caseId, field, currentVal) => {
+  const startEdit = async (caseId, field, currentVal) => {
     if (!canEdit(field)) return
+    const col = ALL_COLS.find(c => c.key === field)
+    // Stage 2b: pre-load reference data for this field's type if needed
+    if (col?.ref) await loadReference(col.ref)
     setEditCell({ caseId, field })
     setEditVal(currentVal != null ? String(currentVal) : '')
     setEditComment('')
@@ -317,8 +346,6 @@ export default function Review() {
     }, ...prev])
     try {
       await updateField(id, caseId, field, editVal, editComment)
-      // Stage 2a: refresh validation for the whole report after a save.
-      // Cheap call (small JSON), keeps the colour state accurate.
       try {
         const v = await getValidation(id)
         const byCaseId = {}
@@ -331,8 +358,33 @@ export default function Review() {
         console.warn('Validation refresh failed (non-blocking):', vErr)
       }
     }
-    catch (e) { console.error(e) }
+    catch (e) {
+      console.error(e)
+      alert('Save failed: ' + (e.response?.data?.detail || e.message))
+    }
     setEditCell(null)
+  }
+
+  // Stage 2b: recalculate the whole report
+  const handleRecalculate = async () => {
+    if (recalculating) return
+    setRecalculating(true)
+    setRecalcResult(null)
+    try {
+      const result = await recalculateReport(id)
+      setRecalcResult(result)
+      // Reload everything so the user sees the new bonus columns and totals
+      const [r, c, t] = await Promise.all([getReport(id), getCases(id), getTrail(id)])
+      setReport(r); setCases(c); setTrail(t)
+      // Validation may have changed too (bonuses are not validated, but
+      // edit state is — clear pending changes since they're now persisted)
+      setChanges({})
+    } catch (e) {
+      console.error(e)
+      alert('Recalculation failed: ' + (e.response?.data?.detail || e.message))
+    } finally {
+      setRecalculating(false)
+    }
   }
 
   const missingRequired = cases.reduce((acc, c) => {
@@ -340,8 +392,16 @@ export default function Review() {
     return acc
   }, 0)
 
-  const canApprove = missingRequired === 0 && ['manager','owner','admin'].includes(user?.role)
-  const canSubmit  = missingRequired === 0
+  const blockingValidationCount = (validationSummary?.fields_missing || 0)
+    + (validationSummary?.fields_unknown || 0)
+
+  const canApprove = missingRequired === 0 && blockingValidationCount === 0
+    && ['manager','owner','admin'].includes(user?.role)
+  const canSubmit  = missingRequired === 0 && blockingValidationCount === 0
+  // Recalculate works regardless of validation state — operator may want to
+  // see how their edits affected totals before fixing every red cell.
+  const canRecalc  = !recalculating
+    && !['approved','distributed'].includes(report?.status)
 
   const clearFilters = () => { setGlobalSearch(''); setColFilters({}); setSortCol(null) }
   const activeFilterCount =
@@ -384,10 +444,6 @@ export default function Review() {
             </button>
           )}
 
-          {/* NEW (Stage 2a): validation summary banner.
-              Shows only when there are issues. Read-only — clicking does
-              nothing yet. Stage 2b will let users click to filter to
-              affected cells. */}
           {validationSummary && (validationSummary.fields_missing > 0 || validationSummary.fields_unknown > 0) && (
             <div style={{ background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:8,
               padding:'7px 12px', fontSize:12, color:'#991b1b' }}
@@ -409,6 +465,16 @@ export default function Review() {
               ⚠ {missingRequired} required field{missingRequired !== 1 ? 's' : ''} incomplete
             </div>
           )}
+
+          {/* Stage 2b: recalculate button */}
+          <button className="btn btn-ghost"
+            onClick={handleRecalculate}
+            disabled={!canRecalc}
+            style={{ fontSize:12, opacity: canRecalc ? 1 : 0.4 }}
+            title="Re-run the bonus engine over all cases in this report">
+            {recalculating ? '⟳ Recalculating…' : '⟳ Recalculate'}
+          </button>
+
           {canApprove ? (
             <>
               <button className="btn btn-danger" style={{ fontSize:12 }}
@@ -435,6 +501,29 @@ export default function Review() {
         </div>
       </div>
 
+      {/* ── Recalc result banner (transient) ────────────────── */}
+      {recalcResult && (
+        <div style={{
+          background: recalcResult.cases_updated > 0 ? '#d1fae5' : '#f0f9ff',
+          border: `1px solid ${recalcResult.cases_updated > 0 ? '#6ee7b7' : '#bae6fd'}`,
+          borderRadius:8, padding:'7px 12px', fontSize:12, flexShrink:0,
+          display:'flex', justifyContent:'space-between', alignItems:'center',
+        }}>
+          <span>
+            ✓ Recalculation complete.{' '}
+            {recalcResult.cases_updated > 0
+              ? `${recalcResult.cases_updated} case${recalcResult.cases_updated !== 1 ? 's' : ''} updated.`
+              : 'No bonus values changed.'}
+            {' '}Engine total: <strong>{fmtNum(recalcResult.engine_total)}</strong>
+            {recalcResult.tier ? ` · Tier: ${recalcResult.tier}` : ''}
+            {' '}({recalcResult.enrolled} enrolled / {recalcResult.target} target)
+          </span>
+          <button onClick={() => setRecalcResult(null)} style={{
+            background:'none', border:'none', cursor:'pointer', fontSize:14, color:'var(--text-3)',
+          }}>×</button>
+        </div>
+      )}
+
       {/* ── Stats ────────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:10, flexShrink:0 }}>
         {[
@@ -458,7 +547,6 @@ export default function Review() {
 
       {/* ── Toolbar ──────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:8, alignItems:'center', flexShrink:0, flexWrap:'wrap' }}>
-        {/* Global search */}
         <div style={{ position:'relative', width:280 }}>
           <span style={{ position:'absolute', left:9, top:'50%', transform:'translateY(-50%)',
             color:'var(--text-3)', fontSize:14, pointerEvents:'none' }}>⌕</span>
@@ -466,7 +554,6 @@ export default function Review() {
             placeholder="Search all columns…" style={{ paddingLeft:28, fontSize:12 }} />
         </div>
 
-        {/* Column filters toggle */}
         <button className="btn btn-ghost" onClick={() => setShowFilters(!showFilters)}
           style={{ fontSize:12, position:'relative' }}>
           ⚙ Filters
@@ -479,7 +566,6 @@ export default function Review() {
           )}
         </button>
 
-        {/* Column manager */}
         <div style={{ position:'relative' }} ref={colMgrRef}>
           <button className="btn btn-ghost" onClick={() => setShowColMgr(!showColMgr)}
             style={{ fontSize:12, position:'relative' }}>
@@ -553,7 +639,6 @@ export default function Review() {
           )}
         </div>
 
-        {/* Sort indicator */}
         {sortCol && (
           <div style={{ fontSize:11, color:'var(--text-2)', background:'var(--bg)',
             border:'1px solid var(--border-2)', borderRadius:6, padding:'4px 10px',
@@ -573,7 +658,6 @@ export default function Review() {
           {displayCases.length} of {cases.length} · {COLS.length} of {ALL_COLS.length} columns
         </div>
 
-        {/* Legend */}
         {[['crm','🟢 CRM'],['engine','🔵 Engine'],['input','🟡 Required']].map(([type, lbl]) => {
           const s = TYPE_STYLE[type]
           return (
@@ -653,6 +737,11 @@ export default function Review() {
                             <option key={v} value={v}>{String(v)}</option>
                           ))}
                         </select>
+                      ) : col.filter === 'date' ? (
+                        <input type="date" value={val}
+                          onChange={e => setColFilters(p => ({...p,[col.key]:e.target.value}))}
+                          style={{ fontSize:10, padding:'2px 5px', width:'100%',
+                            height:22, border:'1px solid var(--border-2)', borderRadius:3 }} />
                       ) : col.filter === 'text' || col.filter === 'number' ? (
                         <input value={val} onChange={e => setColFilters(p => ({...p,[col.key]:e.target.value}))}
                           placeholder="Filter…"
@@ -680,31 +769,24 @@ export default function Review() {
                 {COLS.map(col => {
                   const rawVal  = c[col.key]
                   const changed = hasChange(c.id, col.key)
-                  const isCRM   = col.type === 'crm'
                   const s       = TYPE_STYLE[col.type]
                   const isGap   = col.key === 'gap'
-                  let display   = rawVal
-                  if (col.mono && rawVal != null && rawVal !== '') {
+
+                  // Stage 2b: format for display. Dates show as DD/MM/YYYY.
+                  let display = rawVal
+                  if (col.isDate && rawVal) {
+                    display = isoToDisplayDate(rawVal)
+                  } else if (col.mono && rawVal != null && rawVal !== '') {
                     const n = Number(rawVal)
                     if (!isNaN(n)) display = isGap
                       ? (n===0 ? '✓ 0' : (n>0?'+':'') + n.toLocaleString('vi-VN'))
                       : n.toLocaleString('vi-VN')
                   }
 
-                  // Stage 2a: cell colouring based on validation status.
-                  // Recent edits ("changed") win over validation colour because
-                  // the user just touched the cell — the colour returns on the
-                  // next page reload after the validation refresh confirms the
-                  // new value is OK.
                   const vStatus = getValidationStatus(c.id, col.key)
                   const vTooltip = getValidationTooltip(c.id, col.key)
                   const vStyle = !changed && vStatus && VALIDATION_STYLE[vStatus]
 
-                  // Compose the final cell background & border:
-                  //   changed (user-edited)     → orange (gold) — existing behaviour
-                  //   alias                     → yellow
-                  //   missing / unknown         → red
-                  //   ok / null                 → default white
                   const cellBg = changed
                     ? '#fff7ed'
                     : (vStyle?.bg ?? '#fff')
@@ -712,7 +794,6 @@ export default function Review() {
                     ? '2px solid var(--gold)'
                     : (vStyle ? `2px solid ${vStyle.border}` : '2px solid transparent')
 
-                  // Title shows validation tooltip if any, otherwise the raw value
                   const cellTitle = vTooltip
                     || (rawVal != null ? String(rawVal) : '')
 
@@ -734,8 +815,6 @@ export default function Review() {
                         whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
                       }}>
                       {changed && <span style={{ color:'var(--gold)', marginRight:3, fontSize:9 }}>✎</span>}
-                      {/* Stage 2a: small status icon for alias/missing/unknown.
-                          Visible without hover so users can scan the table at a glance. */}
                       {!changed && vStatus === 'alias' && (
                         <span style={{ color:'#92400e', marginRight:3, fontSize:9 }}>⚠</span>
                       )}
@@ -804,15 +883,63 @@ export default function Review() {
         </div>
       )}
 
-      {/* ── Edit modal ───────────────────────────────────────── */}
+      {/* ── Edit modal — Stage 2b: dropdowns + date pickers ─────── */}
       {editCell && (() => {
         const col = ALL_COLS.find(c => c.key === editCell.field)
         const needsComment = ENGINE_FIELDS.has(editCell.field)
+        const refData = col?.ref ? referenceCache[col.ref] : null
+        const isDate = col?.isDate
+
+        // Decide which input widget to render:
+        //   1. Date field → native <input type="date">
+        //   2. Field with reference data loaded → <select> dropdown
+        //   3. Anything else (text, number, free-form) → free text input
+        let inputWidget = null
+        if (isDate) {
+          inputWidget = (
+            <input type="date" value={editVal}
+              onChange={e => setEditVal(e.target.value)}
+              autoFocus={!needsComment}
+              onKeyDown={e => e.key === 'Escape' && setEditCell(null)} />
+          )
+        } else if (refData && refData.canonical) {
+          // Build the option list. For alias-aware types (client_type,
+          // institution), the alias map is shown as info but options are
+          // canonical only — saving an alias would just re-introduce the
+          // yellow flag.
+          inputWidget = (
+            <select value={editVal} onChange={e => setEditVal(e.target.value)}
+              autoFocus={!needsComment}
+              onKeyDown={e => e.key === 'Escape' && setEditCell(null)}
+              style={{ width:'100%' }}>
+              <option value="">— select —</option>
+              {refData.canonical.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.display || opt.value}
+                </option>
+              ))}
+            </select>
+          )
+        } else {
+          inputWidget = (
+            <input value={editVal} onChange={e => setEditVal(e.target.value)}
+              autoFocus={!needsComment}
+              onKeyDown={e => e.key === 'Escape' && setEditCell(null)}
+              style={{ fontFamily: col?.mono ? 'var(--mono)' : 'inherit' }} />
+          )
+        }
+
+        // For dropdowns, hint at alias status if applicable
+        const currentValidation = validation[editCell.caseId]?.[editCell.field]
+        const aliasHint = currentValidation?.status === 'alias' && currentValidation.canonical
+          ? `Current value "${currentValidation.current}" is a variant. Preferred: "${currentValidation.canonical}".`
+          : null
+
         return (
           <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)',
             zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}
             onClick={() => setEditCell(null)}>
-            <div className="card fade-in" style={{ padding:24, width:440, maxWidth:'90vw' }}
+            <div className="card fade-in" style={{ padding:24, width:480, maxWidth:'90vw' }}
               onClick={e => e.stopPropagation()}>
               <div style={{ fontSize:9, color:'var(--text-3)', marginBottom:2 }}>{col?.vn}</div>
               <div style={{ fontWeight:700, fontSize:14, marginBottom: needsComment ? 6 : 14 }}>
@@ -823,12 +950,15 @@ export default function Review() {
                   Comment required — engine-suggested value
                 </div>
               )}
+              {aliasHint && (
+                <div style={{ fontSize:11, color:'#92400e', marginBottom:12,
+                  background:'#fef9c3', padding:'6px 10px', borderRadius:6 }}>
+                  ⚠ {aliasHint}
+                </div>
+              )}
               <div style={{ marginBottom:12 }}>
                 <label>New Value</label>
-                <input value={editVal} onChange={e => setEditVal(e.target.value)}
-                  autoFocus={!needsComment}
-                  onKeyDown={e => e.key === 'Escape' && setEditCell(null)}
-                  style={{ fontFamily: col?.mono ? 'var(--mono)' : 'inherit' }} />
+                {inputWidget}
               </div>
               <div style={{ marginBottom:16 }}>
                 <label>{needsComment ? '* Reason for change (required)' : 'Comment (optional)'}</label>
