@@ -59,17 +59,24 @@ router = APIRouter()
 
 # ── Edit policy ──────────────────────────────────────────────────────────────
 EDITABLE_FIELDS = {
+    # Engine-classified fields (require comment when changed)
     "institution_type", "service_fee_type", "package_type",
     "office", "row_type", "scheme", "note_enrolled",
+    # Operator input fields (no comment required)
     "prior_month_rate", "deferral", "handover", "target_owner",
     "targets_name", "case_transition", "presales_agent", "incentive",
     "group_agent_name",
+    # Stage 2b: CRM data fields editable by users to fix imports
+    "student_id", "student_name", "contract_id",
+    "client_type", "country", "app_status", "institution", "system_type",
+    # Stage 2b: date fields
+    "contract_date", "visa_date", "course_start",
 }
+
 ENGINE_FIELDS = {
     "institution_type", "service_fee_type", "package_type",
     "office", "row_type", "scheme", "note_enrolled",
 }
-
 
 # ── Serialisation helpers (ORM row → JSON-ready dict) ────────────────────────
 def _report_to_dict(r: BonusReport, case_count: int = None) -> Dict[str, Any]:
