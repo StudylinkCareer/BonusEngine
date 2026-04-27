@@ -15,7 +15,14 @@ export const getReports      = (params = {}) => api.get('/reports/', { params })
 export const getReport       = (id)          => api.get(`/reports/${id}`).then(r => r.data)
 export const getCases        = (id)          => api.get(`/reports/${id}/cases`).then(r => r.data)
 export const getTrail        = (id)          => api.get(`/reports/${id}/trail`).then(r => r.data)
-export const getBonusReport  = (id)          => api.get(`/reports/${id}/bonus-report`).then(r => r.data)
+export const getBonusReport  = (id)            => api.get(`/reports/${id}/bonus-report`).then(r => r.data)
+
+// ── NEW (Stage 2a): validation + reference list ──────────────────────────
+export const getValidation = (id) =>
+  api.get(`/reports/${id}/validation`).then(r => r.data)
+
+export const getReferenceList = (refType) =>
+  api.get(`/reports/reference/${refType}`).then(r => r.data)
 
 export const uploadReport = (file, staffName, month, year, office, notes = '') => {
   const form = new FormData()

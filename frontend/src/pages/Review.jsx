@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../api/AuthProvider.jsx'
-import { getReport, getCases, getTrail, updateField, approveReport, returnReport, submitReport } from '../api/client.js'
+import { getReport, getCases, getTrail, updateField, approveReport, returnReport, submitReport, getValidation } from '../api/client.js'
 
 const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
@@ -75,6 +75,22 @@ const INPUT_FIELDS = new Set([
   'prior_month_rate','deferral','handover','target_owner','case_transition',
 ])
 
+// ── NEW (Stage 2a): validation status → cell styling ─────────────────────────
+// The backend's /validation endpoint returns one of: ok | alias | missing | unknown
+// per (case, field). These styles colour the cell background accordingly.
+//
+//   ok      → no highlight (default cell background applies)
+//   alias   → soft yellow — value is acceptable but a canonical preferred form
+//             exists. Operator is encouraged but not forced to update.
+//   missing → soft red — mandatory field is empty. Blocks submission.
+//   unknown → soft red — value is not in the canonical or alias list. Blocks
+//             submission once Stage 2c lands.
+const VALIDATION_STYLE = {
+  alias:   { bg:'#fef9c3', border:'#fde047' },  // yellow-100 / yellow-300
+  missing: { bg:'#fee2e2', border:'#fca5a5' },  // red-100 / red-300
+  unknown: { bg:'#fee2e2', border:'#fca5a5' },  // red-100 / red-300
+}
+
 export default function Review() {
   const { id }   = useParams()
   const { user } = useAuth()
@@ -90,6 +106,12 @@ export default function Review() {
   const [showTrail,    setShowTrail]    = useState(false)
   const [submitting,   setSubmitting]   = useState(false)
   const [loading,      setLoading]      = useState(true)
+
+  // NEW (Stage 2a): per-cell validation state
+  // Shape: { caseId: { fieldName: { status, current, canonical, canonical_code } } }
+  // Populated on page load and after each successful field update.
+  const [validation, setValidation] = useState({})
+  const [validationSummary, setValidationSummary] = useState(null)
 
   // Search / sort / filter
   const [globalSearch, setGlobalSearch] = useState('')
@@ -123,6 +145,20 @@ export default function Review() {
     try {
       const [r, c, t] = await Promise.all([getReport(id), getCases(id), getTrail(id)])
       setReport(r); setCases(c); setTrail(t)
+
+      // Stage 2a: load validation in the background. Don't block the page on it —
+      // if validation fails or is slow, the table still renders without colouring.
+      try {
+        const v = await getValidation(id)
+        const byCaseId = {}
+        for (const cv of v.case_validations || []) {
+          byCaseId[cv.case_id] = cv.fields
+        }
+        setValidation(byCaseId)
+        setValidationSummary(v.summary)
+      } catch (vErr) {
+        console.warn('Validation load failed (non-blocking):', vErr)
+      }
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }
@@ -142,6 +178,30 @@ export default function Review() {
     return c ? c[field] : ''
   }
   const hasChange = (caseId, field) => !!changes[`${caseId}_${field}`]
+
+  // NEW (Stage 2a): get validation status for a (case, field) pair.
+  // Returns one of "ok" | "alias" | "missing" | "unknown" | null
+  // null when validation hasn't loaded or this field isn't validated.
+  const getValidationStatus = (caseId, field) => {
+    return validation[caseId]?.[field]?.status ?? null
+  }
+
+  // NEW (Stage 2a): get a tooltip describing the validation issue.
+  // Used as the cell's title attribute on hover.
+  const getValidationTooltip = (caseId, field) => {
+    const v = validation[caseId]?.[field]
+    if (!v) return null
+    if (v.status === 'alias' && v.canonical) {
+      return `Acceptable variant — preferred form is "${v.canonical}"`
+    }
+    if (v.status === 'missing') {
+      return 'Required field is empty'
+    }
+    if (v.status === 'unknown') {
+      return `"${v.current}" is not a recognised value for this field`
+    }
+    return null
+  }
 
   // Unique values for select dropdowns
   const uniqueVals = useMemo(() => {
@@ -183,59 +243,50 @@ export default function Review() {
       }
     })
     if (sortCol) {
-      rows = [...rows].sort((a, b) => {
-        const av = a[sortCol] ?? '', bv = b[sortCol] ?? ''
-        const cmp = typeof av === 'number' && typeof bv === 'number'
-          ? av - bv : String(av).localeCompare(String(bv), undefined, { numeric:true })
+      rows.sort((a, b) => {
+        const av = a[sortCol] ?? ''; const bv = b[sortCol] ?? ''
+        const an = Number(av); const bn = Number(bv)
+        let cmp = (!isNaN(an) && !isNaN(bn))
+          ? an - bn
+          : String(av).localeCompare(String(bv))
         return sortDir === 'asc' ? cmp : -cmp
       })
     }
     return rows
   }, [cases, changes, globalSearch, colFilters, sortCol, sortDir])
 
-  const handleSort = key => {
+  const handleSort = (key) => {
     if (sortCol === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortCol(key); setSortDir('asc') }
   }
 
-  // ── Column drag-to-reorder ────────────────────────────────────
-  const handleDragStart = (e, key) => {
-    setDragKey(key)
-    e.dataTransfer.effectAllowed = 'move'
-  }
-  const handleDragOver = (e, key) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (key !== dragKey) setDragOverKey(key)
-  }
+  const canEdit = (field) =>
+    !['contract_id', 'bonus_enrolled', 'bonus_priority', 'gap', 'base_rate'].includes(field)
+
+  const handleDragStart = (e, key) => { setDragKey(key); e.dataTransfer.effectAllowed = 'move' }
+  const handleDragOver  = (e, key) => { e.preventDefault(); setDragOverKey(key) }
   const handleDrop = (e, targetKey) => {
     e.preventDefault()
     if (!dragKey || dragKey === targetKey) { setDragKey(null); setDragOverKey(null); return }
     setColOrder(prev => {
-      const next  = [...prev]
-      const fromI = next.indexOf(dragKey)
-      const toI   = next.indexOf(targetKey)
-      next.splice(fromI, 1)
-      next.splice(toI, 0, dragKey)
+      const next = [...prev]
+      const fromIdx = next.indexOf(dragKey)
+      const toIdx   = next.indexOf(targetKey)
+      next.splice(fromIdx, 1)
+      next.splice(toIdx, 0, dragKey)
       return next
     })
     setDragKey(null); setDragOverKey(null)
   }
-
-  // ── Column visibility ─────────────────────────────────────────
-  const toggleHide = key => {
+  const toggleHide = (key) => {
     setHiddenCols(prev => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      if (next.has(key)) next.delete(key); else next.add(key)
       return next
     })
   }
-  const showAll  = () => setHiddenCols(new Set())
+  const showAll    = () => setHiddenCols(new Set())
   const resetOrder = () => setColOrder(ALL_COLS.map(c => c.key))
-
-  // ── Editing ───────────────────────────────────────────────────
-  const canEdit = field =>
-    ENGINE_FIELDS.has(field) || INPUT_FIELDS.has(field)
 
   const startEdit = (caseId, field, currentVal) => {
     if (!canEdit(field)) return
@@ -264,7 +315,22 @@ export default function Review() {
       changed_by: user?.full_name || user?.username,
       changed_at: new Date().toISOString(),
     }, ...prev])
-    try { await updateField(id, caseId, field, editVal, editComment) }
+    try {
+      await updateField(id, caseId, field, editVal, editComment)
+      // Stage 2a: refresh validation for the whole report after a save.
+      // Cheap call (small JSON), keeps the colour state accurate.
+      try {
+        const v = await getValidation(id)
+        const byCaseId = {}
+        for (const cv of v.case_validations || []) {
+          byCaseId[cv.case_id] = cv.fields
+        }
+        setValidation(byCaseId)
+        setValidationSummary(v.summary)
+      } catch (vErr) {
+        console.warn('Validation refresh failed (non-blocking):', vErr)
+      }
+    }
     catch (e) { console.error(e) }
     setEditCell(null)
   }
@@ -317,6 +383,26 @@ export default function Review() {
               📋 {trail.length} change{trail.length !== 1 ? 's' : ''}
             </button>
           )}
+
+          {/* NEW (Stage 2a): validation summary banner.
+              Shows only when there are issues. Read-only — clicking does
+              nothing yet. Stage 2b will let users click to filter to
+              affected cells. */}
+          {validationSummary && (validationSummary.fields_missing > 0 || validationSummary.fields_unknown > 0) && (
+            <div style={{ background:'#fee2e2', border:'1px solid #fca5a5', borderRadius:8,
+              padding:'7px 12px', fontSize:12, color:'#991b1b' }}
+              title={`${validationSummary.fields_missing} missing · ${validationSummary.fields_unknown} unknown · ${validationSummary.fields_alias} alias`}>
+              ⛔ {validationSummary.fields_missing + validationSummary.fields_unknown} field
+              {(validationSummary.fields_missing + validationSummary.fields_unknown) !== 1 ? 's' : ''} need attention
+            </div>
+          )}
+          {validationSummary && validationSummary.fields_alias > 0 && validationSummary.fields_missing === 0 && validationSummary.fields_unknown === 0 && (
+            <div style={{ background:'#fef9c3', border:'1px solid #fde047', borderRadius:8,
+              padding:'7px 12px', fontSize:12, color:'#92400e' }}>
+              ⚠ {validationSummary.fields_alias} alias{validationSummary.fields_alias !== 1 ? 'es' : ''} — preferred values available
+            </div>
+          )}
+
           {missingRequired > 0 && (
             <div style={{ background:'#fef3c7', border:'1px solid #fde047', borderRadius:8,
               padding:'7px 12px', fontSize:12, color:'#92400e' }}>
@@ -604,14 +690,40 @@ export default function Review() {
                       ? (n===0 ? '✓ 0' : (n>0?'+':'') + n.toLocaleString('vi-VN'))
                       : n.toLocaleString('vi-VN')
                   }
+
+                  // Stage 2a: cell colouring based on validation status.
+                  // Recent edits ("changed") win over validation colour because
+                  // the user just touched the cell — the colour returns on the
+                  // next page reload after the validation refresh confirms the
+                  // new value is OK.
+                  const vStatus = getValidationStatus(c.id, col.key)
+                  const vTooltip = getValidationTooltip(c.id, col.key)
+                  const vStyle = !changed && vStatus && VALIDATION_STYLE[vStatus]
+
+                  // Compose the final cell background & border:
+                  //   changed (user-edited)     → orange (gold) — existing behaviour
+                  //   alias                     → yellow
+                  //   missing / unknown         → red
+                  //   ok / null                 → default white
+                  const cellBg = changed
+                    ? '#fff7ed'
+                    : (vStyle?.bg ?? '#fff')
+                  const cellBorderLeft = changed
+                    ? '2px solid var(--gold)'
+                    : (vStyle ? `2px solid ${vStyle.border}` : '2px solid transparent')
+
+                  // Title shows validation tooltip if any, otherwise the raw value
+                  const cellTitle = vTooltip
+                    || (rawVal != null ? String(rawVal) : '')
+
                   return (
                     <td key={col.key}
                       onClick={() => canEdit(col.key) && startEdit(c.id, col.key, rawVal)}
-                      title={rawVal != null ? String(rawVal) : ''}
+                      title={cellTitle}
                       style={{
                         width:col.w, minWidth:col.w, maxWidth:col.w, padding:'6px 8px',
-                        background: changed ? '#fff7ed' : '#fff',
-                        borderLeft: changed ? '2px solid var(--gold)' : '2px solid transparent',
+                        background: cellBg,
+                        borderLeft: cellBorderLeft,
                         borderBottom:'1px solid var(--border)',
                         cursor: canEdit(col.key) ? 'pointer' : 'default',
                         fontFamily: col.mono ? 'var(--mono)' : 'inherit',
@@ -622,6 +734,14 @@ export default function Review() {
                         whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
                       }}>
                       {changed && <span style={{ color:'var(--gold)', marginRight:3, fontSize:9 }}>✎</span>}
+                      {/* Stage 2a: small status icon for alias/missing/unknown.
+                          Visible without hover so users can scan the table at a glance. */}
+                      {!changed && vStatus === 'alias' && (
+                        <span style={{ color:'#92400e', marginRight:3, fontSize:9 }}>⚠</span>
+                      )}
+                      {!changed && (vStatus === 'missing' || vStatus === 'unknown') && (
+                        <span style={{ color:'#991b1b', marginRight:3, fontSize:9 }}>⛔</span>
+                      )}
                       {display != null && display !== ''
                         ? String(display)
                         : col.type === 'input'
