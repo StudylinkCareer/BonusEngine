@@ -429,6 +429,9 @@ def update_field(
     if field not in EDITABLE_FIELDS:
         raise HTTPException(400, f"Field '{field}' is not editable")
 
+    if not hasattr(BonusReportCase, field):
+        raise HTTPException(400, f"Field '{field}' does not exist on the case model")
+
     comment   = (body.get("comment") or "").strip()
     new_value = body.get("value", "")
 

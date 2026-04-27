@@ -688,6 +688,11 @@ class BonusReportCase(Base):
     refer_agent        = Column(String(200))
     course_start       = Column(String(20))   # ISO date string
     visa_date          = Column(String(20))
+    contract_date     = Column(String(20))
+    system_type       = Column(String(50))
+    counsellor_name   = Column(String(100))
+    case_officer_name = Column(String(100))
+    course_status     = Column(String(50))
     notes              = Column(Text)
     institution_type   = Column(String(30))
     service_fee_type   = Column(String(50))
