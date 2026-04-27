@@ -63,6 +63,7 @@ def _db_case_to_record(case: Case) -> CaseRecord:
     cs.row_type         = case.row_type or "BASE"
     cs.addon_code       = case.addon_code or ""
     cs.addon_count      = case.addon_count or 0
+    cs.priority_factor  = case.priority_factor or 0.0
     cs.prior_advances_paid = case.prior_advances or 0
     cs.office_source    = case.office_override or OFFICE_DEFAULT
     return cs

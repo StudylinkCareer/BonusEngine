@@ -708,6 +708,7 @@ class BonusReportCase(Base):
     group_agent_name   = Column(String(100))
     case_transition    = Column(String(5), default="NO")
     bonus_enrolled     = Column(Integer, default=0)
+    priority_factor    = Column(Float, default=0.0)
     bonus_priority     = Column(Integer, default=0)
     note_enrolled      = Column(Text)
     note_enrolled_2    = Column(Text)

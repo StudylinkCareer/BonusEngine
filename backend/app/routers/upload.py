@@ -208,6 +208,7 @@ async def upload_template_file(
             institution_type=cs.institution_type,
             group_agent_name=cs.group_agent_name,
             targets_name=staff_name, row_type=cs.row_type,
+            priority_factor=getattr(cs, 'priority_factor', 0.0),
             addon_code=cs.addon_code, addon_count=cs.addon_count,
             is_flagged=is_flagged, has_warnings=bool(cs.warn_msg),
             warn_msg=cs.warn_msg,
