@@ -62,11 +62,20 @@ EDITABLE_FIELDS = {
     "prior_month_rate", "deferral", "handover", "target_owner",
     "targets_name", "case_transition", "presales_agent", "incentive",
     "group_agent_name",
+    # Apr 2026 — direct bonus override (cleaner than MGMT_EXCEPTION abuse
+    # of prior_month_rate). Editing either flips manual_override=True so
+    # recalc preserves the operator value.
+    "bonus_enrolled", "bonus_priority",
 }
 ENGINE_FIELDS = {
     "institution_type", "service_fee_type", "package_type",
     "office", "row_type", "scheme", "note_enrolled",
+    "bonus_enrolled", "bonus_priority",
 }
+# Fields whose edit triggers manual_override=True on the case.
+MANUAL_OVERRIDE_FIELDS = {"bonus_enrolled", "bonus_priority"}
+# Fields stored as int on the DB — coerce string input from the form.
+INT_FIELDS = {"bonus_enrolled", "bonus_priority", "incentive"}
 
 
 # ── Serialisation helpers (ORM row → JSON-ready dict) ────────────────────────
@@ -426,6 +435,13 @@ def update_field(
             422, "A comment is required when overriding an engine-suggested value"
         )
 
+    # Coerce numeric fields. Frontend sends strings — DB columns are integers.
+    if field in INT_FIELDS:
+        try:
+            new_value = int(str(new_value).replace(",", "").replace(".", "").strip() or 0)
+        except ValueError:
+            raise HTTPException(422, f"'{field}' requires a numeric value")
+
     case = (
         db.query(BonusReportCase)
         .filter(
@@ -438,7 +454,32 @@ def update_field(
         raise HTTPException(404, "Case not found")
 
     old_value = getattr(case, field)
+
+    # Apr 2026 — bonus override audit hardening.
+    # When the operator overrides bonus_enrolled or bonus_priority, the
+    # engine's last-computed baseline is auto-prepended to the comment so
+    # the audit log immutably captures what the engine WOULD have paid,
+    # regardless of any subsequent edits. The operator's reason follows.
+    if field in MANUAL_OVERRIDE_FIELDS:
+        baseline_field = (
+            "engine_baseline_enrolled" if field == "bonus_enrolled"
+            else "engine_baseline_priority"
+        )
+        baseline_val = getattr(case, baseline_field, 0) or 0
+        # Lock the baseline + override values into the comment so the audit
+        # row is self-contained even if the case is later edited again.
+        audit_prefix = (
+            f"[Engine baseline {field}: {baseline_val:,} → "
+            f"override: {new_value:,}] "
+        )
+        comment = audit_prefix + comment
+
     setattr(case, field, new_value)
+
+    # Apr 2026 — flag the case as manually overridden so recalc preserves
+    # the operator's value instead of recomputing it.
+    if field in MANUAL_OVERRIDE_FIELDS:
+        case.manual_override = True
 
     db.add(BonusFieldChange(
         report_id   = report_id,

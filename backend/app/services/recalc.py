@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from ..models import BonusReport, BonusReportCase, BonusFieldChange, User
 from ..engine.config import load_config
 from ..engine.calc import calculate_bonuses
+from ..engine.classify import classify_cases
 from ..engine.models import CaseRecord
 # Apr 2026: SCHEME_HN_DIRECT removed by 6-scheme rebuild. The previous import
 # block here was dead code (none of these names were referenced anywhere in
@@ -138,6 +139,15 @@ def recalculate_report(db: Session, report: BonusReport,
 
     case_records = [_db_case_to_record(c) for c in db_cases]
 
+    # Apr 2026: Re-classify on recalc so updates to classify.py (e.g., ** suffix
+    # detection, master-agent lookups) take effect on already-uploaded reports.
+    # Operator overrides via Review Board still win — classify.py respects any
+    # non-DIRECT value already on the case (set when the operator edited the
+    # field in the UI). DIRECT-defaulted cases get re-inferred.
+    case_records = classify_cases(
+        case_records, cfg, report.staff_name, report.year, report.month, {}
+    )
+
     # Run the engine. Returns (cases, home_tier, home_target, home_enrolled).
     # Per-bucket details are stashed on cfg._last_bucket_results.
     calculated, tier, target, enrolled = calculate_bonuses(
@@ -159,15 +169,39 @@ def recalculate_report(db: Session, report: BonusReport,
         if not calc:
             continue
         old_enr, old_pri = before[db_case.id]
-        new_enr = calc.bonus_enrolled or 0
-        new_pri = calc.bonus_priority or 0
 
-        db_case.bonus_enrolled  = new_enr
-        db_case.bonus_priority  = new_pri
-        db_case.note_enrolled   = calc.note_enrolled
-        db_case.note_enrolled_2 = calc.note_enrolled2
-        db_case.note_priority   = calc.note_priority
-        db_case.note_priority_2 = calc.note_priority2
+        # Compute what the engine WOULD pay this run, regardless of override.
+        engine_enr = calc.bonus_enrolled or 0
+        engine_pri = calc.bonus_priority or 0
+
+        # Apr 2026 — always update engine_baseline_* so the audit trail can
+        # reference the engine's true computed value. These columns are not
+        # operator-editable; only the engine writes them.
+        db_case.engine_baseline_enrolled = engine_enr
+        db_case.engine_baseline_priority = engine_pri
+
+        # Apr 2026 — preserve manual override.
+        # When an operator has directly edited bonus_enrolled or bonus_priority
+        # via Review Board, manual_override=True. Recalc keeps the operator
+        # values intact and skips writing engine-computed bonuses for this case.
+        # Notes and warnings still update so the operator sees current engine
+        # context; only the two numeric bonus columns are protected.
+        if getattr(db_case, "manual_override", False):
+            new_enr = old_enr
+            new_pri = old_pri
+            db_case.note_enrolled   = (calc.note_enrolled or "") + " | MANUAL OVERRIDE"
+            db_case.note_enrolled_2 = calc.note_enrolled2
+            db_case.note_priority   = calc.note_priority
+            db_case.note_priority_2 = calc.note_priority2
+        else:
+            new_enr = engine_enr
+            new_pri = engine_pri
+            db_case.bonus_enrolled  = new_enr
+            db_case.bonus_priority  = new_pri
+            db_case.note_enrolled   = calc.note_enrolled
+            db_case.note_enrolled_2 = calc.note_enrolled2
+            db_case.note_priority   = calc.note_priority
+            db_case.note_priority_2 = calc.note_priority2
 
         # Persist engine warnings (Stage 3 — Option B data quality flags).
         # warn_flags is a list of strings emitted by case-level rules

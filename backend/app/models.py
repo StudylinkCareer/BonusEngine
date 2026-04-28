@@ -727,6 +727,18 @@ class BonusReportCase(Base):
     # the Review UI and can choose to override or accept.
     has_warnings       = Column(Boolean, default=False)
     warn_msg           = Column(Text)
+    # Apr 2026 — manual override flag.
+    # Set to True when an operator edits bonus_enrolled or bonus_priority
+    # directly via Review Board. Recalc preserves the manual values
+    # instead of overwriting them with engine-computed ones.
+    manual_override    = Column(Boolean, default=False)
+    # Apr 2026 — immutable engine baseline.
+    # Updated by recalc to reflect what the engine WOULD pay (regardless of
+    # manual override). Provides the original value referenced in audit
+    # comments. Operators cannot edit these columns from the UI; only the
+    # engine writes them on each recalc.
+    engine_baseline_enrolled = Column(Integer, default=0)
+    engine_baseline_priority = Column(Integer, default=0)
     report = relationship("BonusReport", back_populates="cases")
     __table_args__ = (
         UniqueConstraint('report_id', 'contract_id', name='uq_bonus_report_contract'),
