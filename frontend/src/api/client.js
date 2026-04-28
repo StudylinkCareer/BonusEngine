@@ -15,18 +15,7 @@ export const getReports      = (params = {}) => api.get('/reports/', { params })
 export const getReport       = (id)          => api.get(`/reports/${id}`).then(r => r.data)
 export const getCases        = (id)          => api.get(`/reports/${id}/cases`).then(r => r.data)
 export const getTrail        = (id)          => api.get(`/reports/${id}/trail`).then(r => r.data)
-export const getBonusReport  = (id)            => api.get(`/reports/${id}/bonus-report`).then(r => r.data)
-
-// ── NEW (Stage 2a): validation + reference list ──────────────────────────
-export const getValidation = (id) =>
-  api.get(`/reports/${id}/validation`).then(r => r.data)
-
-export const getReferenceList = (refType) =>
-  api.get(`/reports/reference/${refType}`).then(r => r.data)
-
-// ── NEW (Stage 2b): recalculation ────────────────────────────────────────
-export const recalculateReport = (id) =>
-  api.post(`/reports/${id}/recalculate`).then(r => r.data)
+export const getBonusReport  = (id)          => api.get(`/reports/${id}/bonus-report`).then(r => r.data)
 
 export const uploadReport = (file, staffName, month, year, office, notes = '') => {
   const form = new FormData()
@@ -47,6 +36,21 @@ export const approveReport = (id) => api.post(`/reports/${id}/approve`).then(r =
 export const returnReport  = (id, comment) =>
   api.post(`/reports/${id}/return`, { comment }).then(r => r.data)
 export const submitReport  = (id) => api.post(`/reports/${id}/submit`).then(r => r.data)
+
+// Re-runs the engine over all saved cases. Returns
+// { engine_total, tier, target, enrolled, cases_updated, diffs, tier_breakdown, ... }
+export const recalculateReport = (id) =>
+  api.post(`/reports/${id}/recalculate`).then(r => r.data)
+
+// Per-case validation status (alias / missing / unknown). Optional — failures
+// are caught silently in Review.jsx so missing endpoint doesn't break the page.
+export const getValidation = (id) =>
+  api.get(`/reports/${id}/validation`).then(r => r.data)
+
+// Loads canonical reference list (e.g. country, institution_type, scheme)
+// for dropdowns in the edit modal. Optional — caught silently.
+export const getReferenceList = (refType) =>
+  api.get(`/reference/list/${refType}`).then(r => r.data)
 
 export const downloadPDF = async (id, filename) => {
   const r = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' })

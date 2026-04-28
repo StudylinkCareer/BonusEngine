@@ -14,6 +14,7 @@ Endpoints:
   POST  /reports/{id}/submit                       — Bonus Admin submits for manager approval
   POST  /reports/{id}/approve                      — Manager/Admin approves
   POST  /reports/{id}/return                       — Manager returns for revision
+  POST  /reports/{id}/recalculate                  — Re-run engine over saved cases
   GET   /reports/{id}/bonus-report                 — final Báo cáo data
   GET   /reports/{id}/pdf                          — download PDF
   POST  /reports/{id}/email                        — email to staff or payroll (stub)
@@ -527,6 +528,38 @@ def return_report(
 
     db.commit()
     return {"ok": True, "status": "returned"}
+
+
+# ── Recalculate ──────────────────────────────────────────────────────────────
+# Re-runs the bonus engine over all persisted cases in a report. Used after
+# Bonus Admin edits classification fields during review. Delegates to the
+# recalc service module so the engine logic stays in one place.
+@router.post("/{report_id}/recalculate")
+def recalculate(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rep = db.query(BonusReport).filter(BonusReport.id == report_id).first()
+    if not rep:
+        raise HTTPException(404, "Report not found")
+
+    # Don't allow recalculation of finalised reports — their bonus values
+    # are locked once approved or distributed.
+    if rep.status in ("approved", "distributed"):
+        raise HTTPException(
+            400,
+            f"Cannot recalculate a {rep.status} report. "
+            f"Use 'return' to reopen it for editing first."
+        )
+
+    if not ENGINE_AVAILABLE:
+        raise HTTPException(500, "Engine module not loaded on server")
+
+    # Imported lazily so the router still loads even if the service module
+    # has an import-time error — surfaces a clearer message at call time.
+    from ..services.recalc import recalculate_report
+    return recalculate_report(db, rep, current_user)
 
 
 # ── Final báo cáo ────────────────────────────────────────────────────────────
