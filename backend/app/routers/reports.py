@@ -222,9 +222,11 @@ async def upload_report(
             print(f"[UPLOAD DEBUG] staff={staff_name} office={office} "
                   f"year={year} month={month} → target={tgt} enrolled={enr} tier={tier}")
 
-            from ..engine.constants import (
-                SCHEME_HN_DIRECT, SCHEME_CO_SUB, OFFICE_HN, OFFICE_DN,
-            )
+            # Apr 2026: 6-scheme rebuild removed the per-office scheme
+            # transformation. Office is now a separate dimension on
+            # ref_base_rates, so the staff's home scheme is used as-is for
+            # every case. Operator overrides set c.scheme directly via the
+            # Review Board UI; that override is captured below in case_scheme.
             base_scheme = cfg.get_staff_scheme(staff_name)
 
             for c in calculated:
@@ -232,12 +234,9 @@ async def upload_report(
                 status_rule    = cfg.get_status_rule(c.app_status)
                 counts_enrolled = bool(status_rule.counts_as_enrolled)
 
-                # case_scheme is computed inside calc.py per case but never
-                # stored on c. Recompute the same way for persistence.
-                case_scheme = (SCHEME_HN_DIRECT
-                               if c.office in (OFFICE_HN, OFFICE_DN)
-                               and base_scheme not in (SCHEME_HN_DIRECT, SCHEME_CO_SUB)
-                               else base_scheme)
+                # Per-case scheme: use the operator override if set, otherwise
+                # fall back to the staff's home scheme.
+                case_scheme = c.scheme or base_scheme
 
                 parsed_cases.append({
                     "id":                 f"{report_id}_{c.contract_id}",

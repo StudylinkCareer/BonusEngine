@@ -97,7 +97,7 @@ def _get_rates(cfg: BonusConfig, scheme: str, office: str = "") -> dict:
     Backward-compatible with the legacy two-level shape (no office key) so
     that in-memory seed data and tests keep working during the transition.
     """
-    scheme_dict = cfg.base_rates.get(scheme) or cfg.base_rates.get(SCHEME_HCM_DIRECT, {})
+    scheme_dict = cfg.base_rates.get(scheme) or cfg.base_rates.get(SCHEME_CO_DIR, {})
 
     # Detect shape by looking at the first key. If it's an office code
     # (HCM, HN, DN, VP_xxx), this is the new three-level shape and we

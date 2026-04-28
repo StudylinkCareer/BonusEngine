@@ -30,9 +30,11 @@ from ..models import BonusReport, BonusReportCase, BonusFieldChange, User
 from ..engine.config import load_config
 from ..engine.calc import calculate_bonuses
 from ..engine.models import CaseRecord
-from ..engine.constants import (
-    SCHEME_HN_DIRECT, SCHEME_CO_SUB, OFFICE_HN, OFFICE_DN,
-)
+# Apr 2026: SCHEME_HN_DIRECT removed by 6-scheme rebuild. The previous import
+# block here was dead code (none of these names were referenced anywhere in
+# this file). Office is now a separate dimension on ref_base_rates rather
+# than a scheme variant, so per-case scheme transformation is no longer
+# needed at this layer.
 
 
 def _db_case_to_record(case: BonusReportCase) -> CaseRecord:
