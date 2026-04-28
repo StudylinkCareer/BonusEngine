@@ -240,10 +240,14 @@ def recalculate_report(db: Session, report: BonusReport,
                 changed_by  = triggered_by.full_name or triggered_by.username,
             ))
 
-    # Update report-level totals
-    base_cases = [c for c in calculated if c.row_type != "ADDON"]
+    # Update report-level totals.
+    # Apr 2026: sum from db_cases (which reflect any manual overrides written
+    # back above) rather than `calculated` (which is engine-only output and
+    # doesn't know about overrides). This ensures the report total matches
+    # what the operator actually sees in the case grid.
+    base_db_cases = [c for c in db_cases if (c.row_type or "BASE") != "ADDON"]
     new_engine_total = sum((c.bonus_enrolled or 0) + (c.bonus_priority or 0)
-                           for c in base_cases)
+                           for c in base_db_cases)
     report.engine_total   = new_engine_total
     report.tier           = tier
     report.target         = target
