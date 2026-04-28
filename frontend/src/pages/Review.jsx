@@ -310,6 +310,9 @@ export default function Review() {
     'student_id', 'student_name', 'contract_id',
     'client_type', 'country', 'app_status', 'institution', 'system_type',
     'contract_date', 'visa_date', 'course_start',
+    // Apr 2026 — direct bonus override for management exceptions.
+    // Editing requires a comment; sets manual_override=True so recalc preserves it.
+    'bonus_enrolled', 'bonus_priority',
   ])
   const canEdit = (field) => EDITABLE_FRONTEND.has(field)
 
