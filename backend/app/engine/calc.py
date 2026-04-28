@@ -16,7 +16,7 @@
 # like "Standard Package (16tr)" map to canonical codes like USA_STANDARD_16TR.
 # =============================================================================
 
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from .constants import *
 from .config import BonusConfig, StatusRule
 from .models import CaseRecord
@@ -84,15 +84,41 @@ def count_enrolled_for_tier(cases: List[CaseRecord], scheme: str,
     return int(weighted)
 
 
-def _get_rates(cfg: BonusConfig, scheme: str) -> dict:
+def _get_rates(cfg: BonusConfig, scheme: str, office: str = "") -> dict:
     """
     v6.3 FIX #1: Returns FLAT dict suitable for calc.py lookups.
     Input structure:  {tier: {CO: amt, COUN: amt}, "out_sys_co": amt, ...}
     Output structure: {tier: CO_amt, "coun_<tier>": COUN_amt, "out_sys_co": amt, ...}
+
+    Stage 4: rate lookups now take an `office` argument. The internal dict
+    is keyed by (scheme, office) since rates can vary by office. Falls back
+    to HCM rates if the requested office has no rate card defined yet.
+
+    Backward-compatible with the legacy two-level shape (no office key) so
+    that in-memory seed data and tests keep working during the transition.
     """
-    raw = cfg.base_rates.get(scheme, cfg.base_rates.get(SCHEME_HCM_DIRECT, {}))
+    scheme_dict = cfg.base_rates.get(scheme) or cfg.base_rates.get(SCHEME_HCM_DIRECT, {})
+
+    # Detect shape by looking at the first key. If it's an office code
+    # (HCM, HN, DN, VP_xxx), this is the new three-level shape and we
+    # need to dereference office. If it's a tier code (UNDER, MEET_*,
+    # OVER, ...), this is the legacy two-level shape — use it directly.
+    OFFICE_CODES = {OFFICE_HCM, OFFICE_HN, OFFICE_DN}
+    raw = None
+    if scheme_dict:
+        sample_key = next(iter(scheme_dict.keys()))
+        # Treat as new-shape if key matches a known office or starts with VP_
+        is_new_shape = (sample_key in OFFICE_CODES
+                        or (isinstance(sample_key, str) and sample_key.startswith("VP_")))
+        if is_new_shape:
+            raw = scheme_dict.get(office or OFFICE_HCM)
+            if raw is None:
+                raw = scheme_dict.get(OFFICE_HCM, {})
+        else:
+            raw = scheme_dict  # legacy shape — keys are tiers directly
+
     flat = {}
-    for k, v in raw.items():
+    for k, v in (raw or {}).items():
         if isinstance(v, dict):
             # tier dict — split into CO and COUN entries
             if "CO" in v:
@@ -128,7 +154,7 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.note_enrolled = "EXCLUDED: cross-office case not in this period"; return
 
     sr    = cfg.get_status_rule(c.app_status)
-    rates = _get_rates(cfg, scheme)
+    rates = _get_rates(cfg, scheme, c.office)
 
     # ── STEP 2.5: Deferral ────────────────────────────────────────────────────
     if c.deferral.upper() in DEFERRAL_ZERO_VALUES:
@@ -579,22 +605,133 @@ def calculate_bonuses(cases: List[CaseRecord], staff_name: str,
                       office: str = OFFICE_HCM,
                       enrolled_override: int = -1,
                       ) -> Tuple[List[CaseRecord], str, int, int]:
-    target, scheme = cfg.get_staff_target(staff_name, year, month, office=office)
-    enrolled_count  = count_enrolled_for_tier(cases, scheme, cfg, month=month, year=year)
-    if enrolled_override >= 0:
-        enrolled_count = enrolled_override
-    tier            = determine_tier(enrolled_count, target, inherited_tier)
+    """Compute bonuses for every case in a staff's monthly report.
 
+    Multi-bucket model (Stage 4): each case has its own (scheme, office)
+    pair (set during upload from staff defaults, optionally overridden by
+    operator in Review). Cases are grouped into buckets, each bucket gets
+    its own tier calculation against its own target, and base rates for
+    cases in that bucket use that bucket's tier.
+
+    Returns:
+      cases:         the input list, mutated in place with bonus values
+      tier_display:  tier string for the staff's HOME bucket (backwards
+                     compat for callers that expect a single tier; full
+                     per-bucket detail is in cfg._last_bucket_results)
+      target:        target for the home bucket (backwards compat)
+      enrolled:      enrolled count for the home bucket (backwards compat)
+
+    The full per-bucket breakdown is also stashed on the BonusConfig
+    object as `cfg._last_bucket_results` for the caller to retrieve. This
+    is a bit ugly but avoids breaking the function signature for existing
+    callers (recalc.py, reports.py upload path).
+    """
+    # ── Group cases into buckets by scheme (Stage 4 model) ──────────────────
+    #
+    # Bucket key is the SCHEME, not (scheme, office). Rationale:
+    #   - A staff member's tier is computed against their home target.
+    #   - Cases that classify into a different OFFICE (e.g. an HCM staff
+    #     with an RMIT case classified to HN) still belong to the staff's
+    #     home tier — the office assignment affects rate-card lookup only.
+    #   - But cases under a DIFFERENT SCHEME (e.g. Phạm Thị Lợi default
+    #     CO_SUB plus a few CO_DIRECT VP_DN cases via operator override)
+    #     are genuinely separate buckets — different target, different tier.
+    #
+    # So we bucket by scheme. Within each bucket, individual cases keep
+    # their own office for rate-card lookup. This preserves single-scheme
+    # behaviour (An, Yến) while enabling multi-scheme staff (Lợi).
+    home_target, home_scheme = cfg.get_staff_target(
+        staff_name, year, month, office=office)
+
+    buckets: Dict[str, List[CaseRecord]] = {}
     for c in cases:
-        if c.row_type == ROW_ADDON: continue
-        case_scheme = (SCHEME_HN_DIRECT
-                       if c.office in (OFFICE_HN, OFFICE_DN)
-                       and scheme not in (SCHEME_HN_DIRECT, SCHEME_CO_SUB)
-                       else scheme)
-        calc_single_case(c, tier, target, enrolled_count,
-                         case_scheme, cfg, month, year, is_counsellor)
+        if c.row_type == ROW_ADDON:
+            continue
+        case_scheme = c.scheme or home_scheme
+        buckets.setdefault(case_scheme, []).append(c)
 
+    # ── Calculate per bucket ────────────────────────────────────────────────
+    bucket_results = []
+    home_bucket_tier = ""
+    home_bucket_target = home_target
+    home_bucket_enrolled = 0
+
+    for bucket_scheme, bucket_cases in buckets.items():
+        # Look up target for this bucket. Home scheme uses the staff's home
+        # target. Other schemes look up their own target row, which may not
+        # exist (e.g., Lợi defaulting to CO_SUB has a CO_SUB target, but a
+        # few CO_DIRECT cases would need a separate CO_DIRECT target).
+        if bucket_scheme == home_scheme:
+            bucket_target = home_target
+        else:
+            # Try to find a target for this scheme's home office; fall
+            # back to home_target if none exists yet.
+            bucket_target, _ = cfg.get_staff_target(
+                staff_name, year, month, office=office)
+            # Note: ref_staff_targets keying could be extended to scheme
+            # in a future iteration. For now we use the staff's home
+            # target as a sensible fallback when no scheme-specific target
+            # is configured.
+
+        # Count enrolled IN THIS BUCKET only
+        bucket_enrolled = count_enrolled_for_tier(
+            bucket_cases, bucket_scheme, cfg, month=month, year=year)
+
+        # Inherited tier override only applies to the home bucket
+        bucket_inherited = (inherited_tier
+                             if bucket_scheme == home_scheme
+                             else "")
+
+        # Override count only applies to the home bucket
+        bucket_count = bucket_enrolled
+        if enrolled_override >= 0 and bucket_scheme == home_scheme:
+            bucket_count = enrolled_override
+
+        bucket_tier = determine_tier(bucket_count, bucket_target, bucket_inherited)
+
+        # Calculate each case in the bucket using THIS bucket's tier.
+        # The case's own c.office determines the rate-card lookup —
+        # same scheme, but office-specific rates if seeded.
+        for c in bucket_cases:
+            calc_single_case(c, bucket_tier, bucket_target, bucket_count,
+                             bucket_scheme, cfg, month, year, is_counsellor)
+
+        # Tally bucket totals for the breakdown record
+        bucket_total = sum((c.bonus_enrolled or 0) + (c.bonus_priority or 0)
+                           for c in bucket_cases)
+        tier_display = resolve_meet_tier(0, cfg) if bucket_tier == TIER_MEET else bucket_tier
+
+        bucket_results.append({
+            "scheme":       bucket_scheme,
+            "office":       office,  # display office (the report's office),
+                                     # not per-case (cases keep their own office)
+            "target":       bucket_target,
+            "enrolled":     bucket_count,
+            "tier":         tier_display,
+            "case_count":   len(bucket_cases),
+            "bucket_total": bucket_total,
+        })
+
+        # Capture home bucket details for backwards-compat return values
+        if bucket_scheme == home_scheme:
+            home_bucket_tier = tier_display
+            home_bucket_target = bucket_target
+            home_bucket_enrolled = bucket_count
+
+    # ── Process addon rows after all buckets calculated ─────────────────────
     _process_addon_rows(cases, cfg)
 
-    tier_display = resolve_meet_tier(0, cfg) if tier == TIER_MEET else tier
-    return cases, tier_display, target, enrolled_count
+    # ── Stash full breakdown on cfg for caller retrieval ────────────────────
+    cfg._last_bucket_results = bucket_results
+
+    # If staff has no cases in their home bucket, surface the largest bucket
+    # as the "primary" tier for backwards compat. This avoids returning empty
+    # strings and preserves single-bucket behaviour for existing tests.
+    if not home_bucket_tier and bucket_results:
+        primary = max(bucket_results, key=lambda b: b["case_count"])
+        home_bucket_tier     = primary["tier"]
+        home_bucket_target   = primary["target"]
+        home_bucket_enrolled = primary["enrolled"]
+
+    return cases, home_bucket_tier, home_bucket_target, home_bucket_enrolled
+

@@ -47,6 +47,10 @@ class CaseRecord:
     deferral:         str = DEFERRAL_NONE  # Deferral / waiver code
     package_type:     str = PKG_NONE       # Package code from 09_SERVICE_FEE_RATES
     office:           str = OFFICE_DEFAULT # HCM / HN / DN
+    scheme:           str = ""             # Stage 4: per-case scheme
+                                            # (HCM_DIRECT / HN_DIRECT / CO_SUB / etc.)
+                                            # Empty → engine defaults to staff home scheme.
+                                            # Operator can override per case in Review UI.
     handover:         str = "NO"           # YES / NO
     target_owner:     str = ""             # Relevant if handover = YES
     case_transition:  str = "NO"           # YES / NO

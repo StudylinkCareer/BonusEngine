@@ -294,9 +294,25 @@ class BonusConfig:
                 return st.scheme
         return SCHEME_HCM_DIRECT
 
-    def get_base_rate(self, scheme: str, tier: str, role: str = "CO") -> int:
-        """Returns base rate amount for scheme/tier/role. Returns 0 if not found."""
-        return self.base_rates.get(scheme, {}).get(tier, {}).get(role, 0)
+    def get_base_rate(self, scheme: str, tier: str, role: str = "CO",
+                      office: str = "") -> int:
+        """Returns base rate amount for scheme/office/tier/role.
+        Returns 0 if not found. Falls back to HCM if requested office
+        has no rate card for this scheme."""
+        ofc = (office or "HCM").upper()
+        result = (self.base_rates
+                  .get(scheme, {})
+                  .get(ofc, {})
+                  .get(tier, {})
+                  .get(role, None))
+        if result is None and ofc != "HCM":
+            # Fall back to HCM rates
+            result = (self.base_rates
+                      .get(scheme, {})
+                      .get("HCM", {})
+                      .get(tier, {})
+                      .get(role, 0))
+        return result or 0
 
     def get_country(self, crm_text: str) -> CountryRuleObj:
         return self.country_codes.get(crm_text.strip().lower(),
@@ -674,16 +690,27 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
         cfg.kpi_weights = []
 
     # ── Base Rates — from ref_base_rates ─────────────────────────────────────
+    # ── Base Rates (Stage 4: now keyed by office) ────────────────────────────
+    # Internal dict structure:
+    #   cfg.base_rates[scheme][office][tier][role] = amount
+    # Falls back to HCM if a requested office isn't seeded for a scheme.
     for r in db.query(BaseRate).filter(BaseRate.is_active==True).all():
         if not _date_active(r): continue
+        # If r.office is empty/null/missing (legacy data), default to HCM so
+        # existing rate cards keep working until they're re-seeded with
+        # explicit offices. After Phase 1 migration runs, every row will
+        # have an explicit office value.
+        rate_office = (getattr(r, 'office', None) or "HCM").upper()
         if r.scheme not in cfg.base_rates:
             cfg.base_rates[r.scheme] = {}
-        if r.tier not in cfg.base_rates[r.scheme]:
-            cfg.base_rates[r.scheme][r.tier] = {}
+        if rate_office not in cfg.base_rates[r.scheme]:
+            cfg.base_rates[r.scheme][rate_office] = {}
+        if r.tier not in cfg.base_rates[r.scheme][rate_office]:
+            cfg.base_rates[r.scheme][rate_office][r.tier] = {}
         # Keep the most recently started record if duplicates exist
-        existing = cfg.base_rates[r.scheme][r.tier].get(r.role, -1)
+        existing = cfg.base_rates[r.scheme][rate_office][r.tier].get(r.role, -1)
         if existing == -1 or r.amount > 0:
-            cfg.base_rates[r.scheme][r.tier][r.role] = r.amount
+            cfg.base_rates[r.scheme][rate_office][r.tier][r.role] = r.amount
 
     # ── Incentive Threshold ───────────────────────────────────────────────────
     tier_rule = db.query(IncentiveTier).filter(

@@ -631,7 +631,7 @@ class ContractBonus(Base):
 
 
 # =============================================================================
-# REVIEW WORKFLOW TABLES (replaces SQLite tables previously in routers/reports.py)
+# REVIEW WORKFLOW TABLES
 # =============================================================================
 # These three tables drive the upload → review → submit → approve UI flow.
 # Tables are auto-created by Base.metadata.create_all() in main.py at startup.
@@ -640,7 +640,7 @@ class ContractBonus(Base):
 
 class BonusReport(Base):
     """
-    bonus_reports — one row per uploaded review (was the SQLite `reports` table).
+    bonus_reports — one row per uploaded review.
     Uses a hex-token primary key so URLs like /review/aa83a51d4e31ff9b are not
     enumerable by ID.
     """
@@ -670,7 +670,7 @@ class BonusReport(Base):
 
 class BonusReportCase(Base):
     """
-    bonus_report_cases — one row per case in a review (was SQLite `report_cases`).
+    bonus_report_cases — one row per case in a review.
     Mirrors the engine's CaseRecord shape; persisted after upload and editable
     by Bonus Admin via the field-edit endpoint.
     """
@@ -688,11 +688,6 @@ class BonusReportCase(Base):
     refer_agent        = Column(String(200))
     course_start       = Column(String(20))   # ISO date string
     visa_date          = Column(String(20))
-    contract_date     = Column(String(20))
-    system_type       = Column(String(50))
-    counsellor_name   = Column(String(100))
-    case_officer_name = Column(String(100))
-    course_status     = Column(String(50))
     notes              = Column(Text)
     institution_type   = Column(String(30))
     service_fee_type   = Column(String(50))
@@ -713,15 +708,12 @@ class BonusReportCase(Base):
     group_agent_name   = Column(String(100))
     case_transition    = Column(String(5), default="NO")
     bonus_enrolled     = Column(Integer, default=0)
-    priority_factor    = Column(Float, default=0.0)
     bonus_priority     = Column(Integer, default=0)
     note_enrolled      = Column(Text)
     note_enrolled_2    = Column(Text)
     note_priority      = Column(Text)
     note_priority_2    = Column(Text)
     gap                = Column(Integer, default=0)
-    has_warnings     = Column(Boolean, default=False)
-    warn_msg         = Column(Text)
     section            = Column(String(20))
     report = relationship("BonusReport", back_populates="cases")
     __table_args__ = (
@@ -731,8 +723,8 @@ class BonusReportCase(Base):
 
 class BonusFieldChange(Base):
     """
-    bonus_field_changes — audit log of every edit to a case field (was SQLite
-    `field_changes`). Append-only; never updated or deleted.
+    bonus_field_changes — audit log of every edit to a case field.
+    Append-only; never updated or deleted.
     """
     __tablename__ = "bonus_field_changes"
     id          = Column(Integer, primary_key=True, autoincrement=True)
@@ -745,49 +737,3 @@ class BonusFieldChange(Base):
     comment     = Column(Text)
     changed_by  = Column(String(100), nullable=False)
     changed_at  = Column(DateTime, default=datetime.utcnow)
-
-class PriorityPromotion(Base):
-    """
-    ref_priority_promotions — date-bounded factor changes for priority partners.
-
-    A "promotion" overrides the default 0.5 factor for a partner during a
-    specific date range. Multiple rows per (partner, year) are allowed
-    (e.g., promoted Feb–Apr, demoted May–Jul, promoted again Aug–Dec) but
-    they must NOT have overlapping date ranges. Overlap rejection happens
-    at engine load time.
-
-    Promotions don't cross years — if a promotion spans years, create two
-    rows (one per year).
-    """
-    __tablename__ = "ref_priority_promotions"
-    id                = Column(Integer, primary_key=True)
-    institution_name  = Column(String(200), nullable=False)
-    year              = Column(Integer,     nullable=False)
-    effective_from    = Column(Date,        nullable=False)
-    effective_to      = Column(Date,        nullable=False)
-    factor            = Column(Float,       nullable=False, default=0.5)
-    note              = Column(Text)
-    is_active         = Column(Boolean,     nullable=False, default=True)
-    created_at        = Column(DateTime,    default=datetime.utcnow)
-    created_by        = Column(String(100))
-    updated_at        = Column(DateTime)
-
-
-class InternalAgent(Base):
-    """
-    ref_internal_agents — patterns for identifying StudyLink-internal agents.
-
-    When a case's Refer Source Agent contains one of these patterns
-    (case-insensitive substring match), the case is treated as direct
-    (not externally agent-referred) for priority bonus purposes.
-
-    Replaces the previously-hardcoded regex in input.py.
-    """
-    __tablename__ = "ref_internal_agents"
-    id           = Column(Integer, primary_key=True)
-    pattern      = Column(String(100), nullable=False)
-    note         = Column(Text)
-    is_active    = Column(Boolean,     nullable=False, default=True)
-    created_at   = Column(DateTime,    default=datetime.utcnow)
-    created_by   = Column(String(100))
-    updated_at   = Column(DateTime)

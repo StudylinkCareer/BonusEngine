@@ -7,21 +7,15 @@
 #
 # Input: a BonusReport that already exists in the DB with cases attached.
 # Output: same cases with bonus_enrolled / bonus_priority / notes updated;
-#         report totals (engine_total, tier, target, enrolled, tier_breakdown)
-#         updated.
+#         report totals (engine_total, tier, target, enrolled) updated.
 #
 # This intentionally skips the classify_cases step. Classification happens
 # at upload time. After upload, operator edits to classification fields
-# (institution_type, package_type, service_fee_type, office, scheme, etc.)
-# are the authoritative values — re-running the auto-classifier would
-# overwrite those edits.
-#
-# Stage 4 (Apr 2026):
-#   - reads c.scheme per case (operator may have overridden default)
-#   - persists per-bucket tier breakdown JSON to BonusReport.tier_breakdown
+# (institution_type, package_type, service_fee_type, office, etc.) are the
+# authoritative values — re-running the auto-classifier would overwrite
+# those edits.
 # =============================================================================
 
-import json
 from datetime import datetime
 from typing import Optional, Tuple, List
 from sqlalchemy.orm import Session
@@ -58,11 +52,6 @@ def _db_case_to_record(case: BonusReportCase) -> CaseRecord:
     cs.is_vietnam       = bool(case.is_vietnam)
     cs.is_agent_referred = bool(case.is_agent_referred)
     cs.office           = case.office or ""
-    # Stage 4 — per-case scheme override (set by operator in Review UI).
-    # Empty string is fine — the engine falls back to the staff's home
-    # scheme during bucketing. The model field defaults to "" for cases
-    # that haven't had a manual override.
-    cs.scheme           = case.scheme or ""
     cs.row_type         = case.row_type or "BASE"
     cs.deferral         = case.deferral or "NONE"
     cs.handover         = case.handover or "NO"
@@ -100,22 +89,18 @@ def recalculate_report(db: Session, report: BonusReport,
 
     Returns:
       {
-        "report_id":      str,
-        "tier":           str,    # home bucket tier (display)
-        "target":         int,    # home bucket target
-        "enrolled":       int,    # home bucket enrolled
-        "engine_total":   int,    # grand total across all buckets
-        "manual_total":   int,
-        "gap":            int,
-        "cases_updated":  int,
-        "diffs":          [...],  # per-case before/after where bonus changed
-        "tier_breakdown": [...],  # Stage 4 — list of bucket result dicts
+        "report_id": str,
+        "tier": str,
+        "target": int,
+        "enrolled": int,
+        "engine_total": int,
+        "cases_updated": int,
+        "diffs": [ ... per-case before/after where bonus changed ... ],
       }
 
     Side effects:
       - Updates each BonusReportCase.bonus_enrolled / bonus_priority / notes
-        / has_warnings / warn_msg
-      - Updates report.engine_total, tier, target, enrolled, tier_breakdown
+      - Updates report.engine_total, tier, target, enrolled, base_rate
       - Creates BonusFieldChange entries for cases whose bonus moved
       - Updates report.updated_at
     """
@@ -128,7 +113,7 @@ def recalculate_report(db: Session, report: BonusReport,
     if not db_cases:
         return {"report_id": report.id, "tier": None, "target": 0,
                 "enrolled": 0, "engine_total": 0, "cases_updated": 0,
-                "diffs": [], "tier_breakdown": []}
+                "diffs": []}
 
     # Snapshot current bonus values for diff computation
     before = {c.id: (c.bonus_enrolled or 0, c.bonus_priority or 0)
@@ -136,16 +121,11 @@ def recalculate_report(db: Session, report: BonusReport,
 
     case_records = [_db_case_to_record(c) for c in db_cases]
 
-    # Run the engine. Returns (cases, home_tier, home_target, home_enrolled).
-    # Per-bucket details are stashed on cfg._last_bucket_results.
+    # Run the engine
     calculated, tier, target, enrolled = calculate_bonuses(
         case_records, report.staff_name, report.year, report.month,
         cfg, office=report.office,
     )
-
-    # Stage 4 — capture per-bucket breakdown
-    bucket_results = getattr(cfg, '_last_bucket_results', None) or []
-    tier_breakdown_json = json.dumps(bucket_results) if bucket_results else None
 
     # Index calculated cases by contract_id for write-back
     calc_by_cid = {c.contract_id: c for c in calculated}
@@ -208,25 +188,23 @@ def recalculate_report(db: Session, report: BonusReport,
     base_cases = [c for c in calculated if c.row_type != "ADDON"]
     new_engine_total = sum((c.bonus_enrolled or 0) + (c.bonus_priority or 0)
                            for c in base_cases)
-    report.engine_total   = new_engine_total
-    report.tier           = tier
-    report.target         = target
-    report.enrolled       = enrolled
-    report.gap            = new_engine_total - (report.manual_total or 0)
-    report.tier_breakdown = tier_breakdown_json   # Stage 4
-    report.updated_at     = datetime.utcnow()
+    report.engine_total = new_engine_total
+    report.tier         = tier
+    report.target       = target
+    report.enrolled     = enrolled
+    report.gap          = new_engine_total - (report.manual_total or 0)
+    report.updated_at   = datetime.utcnow()
 
     db.commit()
 
     return {
-        "report_id":      report.id,
-        "tier":           tier,
-        "target":         target,
-        "enrolled":       enrolled,
-        "engine_total":   new_engine_total,
-        "manual_total":   report.manual_total or 0,
-        "gap":            report.gap,
-        "cases_updated":  cases_updated,
-        "diffs":          diffs,
-        "tier_breakdown": bucket_results,   # Stage 4 — for the API response
+        "report_id":     report.id,
+        "tier":          tier,
+        "target":        target,
+        "enrolled":      enrolled,
+        "engine_total":  new_engine_total,
+        "manual_total":  report.manual_total or 0,
+        "gap":           report.gap,
+        "cases_updated": cases_updated,
+        "diffs":         diffs,
     }

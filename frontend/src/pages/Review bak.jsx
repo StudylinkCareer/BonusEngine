@@ -51,8 +51,7 @@ const ALL_COLS = [
   { key:'addon_code',         vn:'Mã ADDON',                    en:'Add-on Service Code',           type:'engine', w:140, filter:'text'   },
   { key:'addon_count',        vn:'Số lượng ADDON',              en:'Add-on Count',                  type:'engine', w:110, filter:'number', mono:true },
   // ── Engine additions ──────────────────────────────────────────
-  // Stage 4: scheme is now editable per case via dropdown (ref:'scheme')
-  { key:'scheme',             vn:'Sơ đồ tính thưởng',           en:'Calculation Scheme',            type:'engine', w:130, filter:'select', ref:'scheme' },
+  { key:'scheme',             vn:'Sơ đồ tính thưởng',           en:'Calculation Scheme',            type:'engine', w:130, filter:'select' },
   { key:'is_vietnam',         vn:'Trong nước VN',               en:'Vietnam Domestic',              type:'engine', w:120, filter:'select' },
   { key:'is_agent_referred',  vn:'Qua đại lý bên ngoài',        en:'Via External Agent',            type:'engine', w:130, filter:'select' },
   { key:'counts_as_enrolled', vn:'Tính vào chỉ tiêu KPI',       en:'Counts Toward KPI',             type:'engine', w:130, filter:'select' },
@@ -87,17 +86,6 @@ const VALIDATION_STYLE = {
   alias:   { bg:'#fef9c3', border:'#fde047' },
   missing: { bg:'#fee2e2', border:'#fca5a5' },
   unknown: { bg:'#fee2e2', border:'#fca5a5' },
-}
-
-// Stage 4 — tier badge colour helper for multi-bucket header display.
-// Used by the per-bucket tier badges. Single-bucket reports use the
-// existing single-tier rendering in the stats card.
-const tierColor = (tier) => {
-  if (!tier) return '#94a3b8'
-  if (tier === 'OVER')          return '#16a34a'   // green
-  if (String(tier).startsWith('MEET')) return '#2563eb' // blue
-  if (tier === 'UNDER')         return '#dc2626'   // red
-  return '#64748b'                                  // gray fallback
 }
 
 // ── Stage 2b: format helpers for date display ──────────────────────────────
@@ -225,22 +213,6 @@ export default function Review() {
     () => cases.filter(c => c.has_warnings).length,
     [cases]
   )
-
-  // Stage 4 — parse tier_breakdown JSON from report.
-  // Single-bucket reports have either no breakdown or a one-element array;
-  // multi-bucket reports (Phạm Thị Lợi etc.) have multiple entries.
-  const tierBreakdown = useMemo(() => {
-    if (!report?.tier_breakdown) return null
-    try {
-      const parsed = JSON.parse(report.tier_breakdown)
-      return Array.isArray(parsed) ? parsed : null
-    } catch (e) {
-      console.warn('Failed to parse tier_breakdown JSON:', e)
-      return null
-    }
-  }, [report?.tier_breakdown])
-
-  const isMultiBucket = tierBreakdown && tierBreakdown.length > 1
 
   const uniqueVals = useMemo(() => {
     const out = {}
@@ -535,39 +507,6 @@ export default function Review() {
         </div>
       </div>
 
-      {/* ── Stage 4: Multi-bucket tier breakdown banner ───────
-          Shown only when the report has more than one (scheme, office)
-          bucket. Single-bucket reports use the regular tier stats card. */}
-      {isMultiBucket && (
-        <div style={{
-          flexShrink:0, padding:'10px 14px',
-          background:'linear-gradient(to right, #f0f9ff, #fff)',
-          border:'1px solid #bae6fd', borderRadius:8,
-          display:'flex', alignItems:'center', gap:12, flexWrap:'wrap',
-        }}>
-          <span style={{ fontSize:11, fontWeight:600, color:'#0369a1', textTransform:'uppercase', letterSpacing:0.4 }}>
-            Multi-bucket calculation
-          </span>
-          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-            {tierBreakdown.map((b, i) => (
-              <span key={i}
-                title={`${b.case_count} case${b.case_count !== 1 ? 's' : ''} · ${fmtNum(b.bucket_total)} VND`}
-                style={{
-                  padding:'4px 10px', borderRadius:4, fontSize:11, fontWeight:600,
-                  background: tierColor(b.tier), color:'#fff',
-                }}>
-                {b.scheme} @ {b.office}: {b.tier} ({b.enrolled}/{b.target})
-              </span>
-            ))}
-          </div>
-          <div style={{ marginLeft:'auto', fontSize:11, color:'var(--text-2)' }}>
-            Sum: <strong style={{ fontFamily:'var(--mono)', color:'var(--text)' }}>
-              {fmtNum(tierBreakdown.reduce((s, b) => s + (b.bucket_total || 0), 0))}
-            </strong>
-          </div>
-        </div>
-      )}
-
       {/* ── Recalc result banner (transient) ────────────────── */}
       {recalcResult && (
         <div style={{
@@ -596,8 +535,7 @@ export default function Review() {
         {[
           { label:'Total Cases',  value: cases.length },
           { label:'Enrolled',     value: cases.filter(c => c.counts_as_enrolled).length },
-          { label: isMultiBucket ? 'Home Tier' : 'Tier',
-            value: report.tier || '—',          mono:true },
+          { label:'Tier',         value: report.tier || '—',          mono:true },
           { label:'Engine Total', value: fmtNum(report.engine_total), mono:true },
           { label:'Manual Total', value: fmtNum(report.manual_total), mono:true },
           { label:'Gap',          value: fmtGap(report.gap),          mono:true, isGap:true, gapVal:report.gap },
@@ -1009,10 +947,6 @@ export default function Review() {
         const editingCase = cases.find(c => c.id === editCell.caseId)
         const caseWarning = editingCase?.has_warnings ? editingCase.warn_msg : null
 
-        // Stage 4 — when editing scheme or office, show a brief explainer
-        // because changing these values re-buckets the case on next recalc
-        const isBucketField = editCell.field === 'scheme' || editCell.field === 'office'
-
         return (
           <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)',
             zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}
@@ -1026,16 +960,6 @@ export default function Review() {
               {needsComment && (
                 <div style={{ fontSize:11, color:'var(--returned)', marginBottom:12 }}>
                   Comment required — engine-suggested value
-                </div>
-              )}
-              {/* Stage 4 — bucket-field explainer */}
-              {isBucketField && (
-                <div style={{ fontSize:11, color:'#0369a1', marginBottom:12,
-                  background:'#f0f9ff', padding:'8px 10px', borderRadius:6,
-                  border:'1px solid #bae6fd' }}>
-                  ℹ Changing {editCell.field} moves this case into a different
-                  bucket on next recalculation. The bucket determines which
-                  tier and rate card apply.
                 </div>
               )}
               {aliasHint && (

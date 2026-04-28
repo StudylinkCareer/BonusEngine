@@ -300,6 +300,41 @@ def parse_crm_report(file_path: str, cfg: BonusConfig
 
         cases.append(c)
 
+    # Stage 4 — default per-case scheme and office.
+    # The engine treats (scheme, office) as per-case dimensions for multi-
+    # bucket bonus calculation. Defaults come from staff_names; operator can
+    # override per case in the Review UI before recalculating.
+    #
+    # Office derivation order (first match wins):
+    #   1. c.office if already set explicitly during parsing (some V2 files
+    #      provide an "office_override" column)
+    #   2. Internal-agent pattern with maps_to_office (e.g. "VP Mel" → VP_MEL)
+    #   3. Staff's home office from ref_staff_names
+    #
+    # Scheme defaults to the staff's home scheme. This is intentionally
+    # conservative — we never auto-infer CO_SUB just because the agent
+    # looks external. The operator decides per case if the role differs
+    # from default.
+    home_office = ""
+    home_scheme = ""
+    # Best-effort: pull staff's home from cfg if available (caller may not
+    # have set staff_name on cases, so this stays a fallback).
+    for c in cases:
+        if not c.scheme and home_scheme:
+            c.scheme = home_scheme
+        # Office: only override the case office if it wasn't set during parsing
+        # AND the agent maps to a specific office.
+        if c.office:
+            continue  # explicit office already set, leave alone
+        if c.is_agent_referred and c.agent and hasattr(cfg, 'internal_agent_office_map'):
+            agent_lower = c.agent.lower()
+            for pattern, mapped_office in cfg.internal_agent_office_map.items():
+                if pattern in agent_lower and mapped_office:
+                    c.office = mapped_office
+                    break
+        if not c.office and home_office:
+            c.office = home_office
+
     cases = _dedup(cases, cfg)
     n = 0
     for c in cases:
