@@ -664,10 +664,6 @@ class BonusReport(Base):
     manual_total = Column(Integer, default=0)
     gap          = Column(Integer, default=0)
     base_rate    = Column(Integer, default=0)
-    # Stage 4 — JSON-encoded array of per-bucket results when a staff
-    # member's cases span multiple (scheme, office) buckets. Single-bucket
-    # reports leave this NULL.
-    tier_breakdown = Column(Text)
     cases = relationship("BonusReportCase", back_populates="report",
                          cascade="all, delete-orphan")
 
@@ -719,14 +715,6 @@ class BonusReportCase(Base):
     note_priority_2    = Column(Text)
     gap                = Column(Integer, default=0)
     section            = Column(String(20))
-    # Stage 3 — Priority promotion factor (0.0–1.0) applied per case.
-    # Used by the engine to scale priority bonus when promotions apply.
-    priority_factor    = Column(Float, default=0.0)
-    # Stage 3 — Engine warning flags (data-quality issues the engine
-    # detected but couldn't auto-resolve). Operators see these as 🚩 in
-    # the Review UI and can choose to override or accept.
-    has_warnings       = Column(Boolean, default=False)
-    warn_msg           = Column(Text)
     report = relationship("BonusReport", back_populates="cases")
     __table_args__ = (
         UniqueConstraint('report_id', 'contract_id', name='uq_bonus_report_contract'),
