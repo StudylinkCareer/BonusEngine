@@ -108,6 +108,70 @@ def _is_handover(notes: str) -> bool:
     return "bàn giao" in n or "ban giao" in n
 
 
+# ── Institution-type classifier ───────────────────────────────────────────────
+# Apr 2026 (Fix A — table-driven, replaces removed input.py heuristic).
+#
+# Drives `institution_type` (col 28) when the operator hasn't filled it in.
+# Operator-set values always win; this only fires when the field is blank or
+# the placeholder "DIRECT" default that input.py writes.
+#
+# Routing logic:
+#   1. Vietnam country → RMIT_VN / BUV_VN / OTHER_VN
+#   2. Institution name OR group_agent_name matches a row in ref_master_agents:
+#      - agent_type=MASTER_AGENT → OUT_OF_SYSTEM (per procedural doc:
+#        "ghi danh qua Adventus, Can-Achieve, Apply Board" pays flat 400k)
+#      - agent_type=GROUP        → GROUP (full tier rate, weighted 0.7)
+#   3. No match → DIRECT (the input.py default; left as-is)
+#
+# Why match in BOTH institution name and group_agent_name:
+#   - Operators sometimes write the agent in the institution string
+#     (e.g., "University of Tennessee * - GEEBEE"), other times in col 29
+#     (group_agent_name). We check both to catch either convention.
+#
+# Caveat: this is a lookup, not a heuristic. The truth is in ref_master_agents
+# — edit that table to change classifications, not this code.
+
+def _infer_institution_type(
+    institution: str,
+    country: str,
+    group_agent_name: str,
+    cfg: BonusConfig,
+) -> str:
+    inst_low = (institution or "").lower()
+    grp_low  = (group_agent_name or "").lower()
+
+    # ── Step 1: Vietnam-domestic ──────────────────────────────────────────────
+    country_low = (country or "").lower().strip()
+    country_rule = cfg.country_codes.get(country_low)
+    if country_rule and country_rule.is_vietnam:
+        if "rmit" in inst_low:
+            return INST_RMIT_VN
+        if "buv" in inst_low or "british university" in inst_low:
+            return INST_BUV_VN
+        return INST_OTHER_VN
+
+    # ── Step 2: Master agent / group lookup ───────────────────────────────────
+    # Iterate ref_master_agents, longest names first so "Education Centre of
+    # Australia (ECA)" matches before plain "ECA" if both were in the table.
+    for agent_name in sorted(
+        cfg.master_agent_classifications.keys(), key=len, reverse=True
+    ):
+        ma_low = agent_name.lower()
+        if ma_low in inst_low or (grp_low and ma_low in grp_low):
+            agent_type = cfg.master_agent_classifications[agent_name]
+            if agent_type == "MASTER_AGENT":
+                # Out-of-system enrolment via third-party master agent.
+                # Per VBA Step 6B: flat 400k rate.
+                return INST_OUT_OF_SYS
+            if agent_type == "GROUP":
+                # Direct partnership through an institution group.
+                # Per VBA Step 7B: full tier rate, 0.7 KPI weight.
+                return INST_GROUP
+
+    # ── Step 3: No match — leave as DIRECT ────────────────────────────────────
+    return INST_DIRECT
+
+
 def classify_cases(
     cases:              List[CaseRecord],
     cfg:                BonusConfig,
@@ -130,9 +194,26 @@ def classify_cases(
         # Office
         c.office = ov.get("office", _infer_office(c.agent))
 
-        # Institution type override
+        # Institution type
+        # Operator override always wins (col 28 explicit, or Review Board edit).
+        # When absent, fire the table-driven classifier (Fix A).
         if "inst_type" in ov:
             c.institution_type = ov["inst_type"]
+        elif c.institution_type and c.institution_type.upper() not in (INST_DIRECT, ""):
+            # input.py / v7 already set a non-default value — respect it.
+            # Only the placeholder "DIRECT" default triggers re-classification.
+            pass
+        else:
+            inferred = _infer_institution_type(
+                c.institution, c.country, c.group_agent_name, cfg
+            )
+            if inferred != c.institution_type:
+                c.institution_type = inferred
+                c.add_warning(
+                    f"institution_type auto-classified to {inferred} "
+                    f"(matched ref_master_agents). Override in Review Board "
+                    f"if incorrect."
+                )
 
         # Group agent name
         if c.institution_type in (INST_MASTER_AGENT, INST_GROUP):
