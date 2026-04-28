@@ -17,8 +17,9 @@ from typing import Dict, List, Optional, Tuple
 import unicodedata
 
 from .constants import (
-    SCHEME_HCM_DIRECT, SCHEME_HN_DIRECT, SCHEME_CO_SUB,
-    OFFICE_HCM, OFFICE_HN, OFFICE_DN,
+    SCHEME_CO_SUB, SCHEME_CO_DIR, SCHEME_CO_VP,
+    SCHEME_COUNS_SUB, SCHEME_COUNS_DIR, SCHEME_COUNS_VP,
+    OFFICE_HCM, OFFICE_HN, OFFICE_DN, OFFICE_MEL,
     SKIP_LABELS,
     TIER_UNDER, TIER_MEET_HIGH, TIER_MEET_LOW, TIER_MEET, TIER_OVER,
 )
@@ -44,7 +45,7 @@ class StaffTargetObj:
     name: str
     office: str = OFFICE_HCM
     role: str = "CO"
-    scheme: str = SCHEME_HCM_DIRECT
+    scheme: str = SCHEME_CO_DIR
     targets: Dict[int, Dict[int, int]] = field(default_factory=dict)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -154,6 +155,11 @@ class BonusConfig:
         self.staff_name_map:    Dict[str, str]                   = {}
         self.skip_labels:       frozenset                        = SKIP_LABELS
         self.master_agents:     List[str]                        = []
+        # Apr 2026: classifier-friendly dict alongside the legacy list.
+        # Key = agent_name (case preserved), Value = "MASTER_AGENT" or "GROUP".
+        # Consumed by input.py infer_institution_type to drive `*` suffix
+        # and refer_agent classification lookups.
+        self.master_agent_classifications: Dict[str, str]        = {}
         self.priority_instns:   List[PriorityInstitutionObj]     = []
         self.priority_promotions: List[PriorityPromotionObj]     = []
         self.internal_agent_patterns: List[str]                  = []
@@ -284,7 +290,7 @@ class BonusConfig:
             if ka in na or na in ka:
                 return st.targets.get(year, {}).get(month, 0), st.scheme
 
-        return 0, SCHEME_HCM_DIRECT
+        return 0, SCHEME_CO_DIR
 
     def get_staff_scheme(self, name: str) -> str:
         resolved = self.resolve_staff_name(name)
@@ -292,7 +298,7 @@ class BonusConfig:
         for (nm_key, off_key), st in self.staff_targets.items():
             if nm_key in candidate_names:
                 return st.scheme
-        return SCHEME_HCM_DIRECT
+        return SCHEME_CO_DIR
 
     def get_base_rate(self, scheme: str, tier: str, role: str = "CO",
                       office: str = "") -> int:
@@ -557,7 +563,7 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
             sn = db.query(StaffNameModel).filter(
                 StaffNameModel.full_name == r.staff_name
             ).first()
-            scheme = sn.scheme if sn and sn.scheme else SCHEME_HCM_DIRECT
+            scheme = sn.scheme if sn and sn.scheme else SCHEME_CO_DIR
             office = r.office or (sn.office if sn else OFFICE_HCM)
             cfg.staff_targets[key] = StaffTargetObj(
                 name=r.staff_name, office=office, role="CO", scheme=scheme,
@@ -585,8 +591,13 @@ def load_config(db, run_date: Optional[date] = None) -> BonusConfig:
         )
 
     # ── Master Agents ─────────────────────────────────────────────────────────
+    # Apr 2026: also populate the classification dict for input.py's
+    # institution_type classifier. Both structures are kept in sync —
+    # the list is for legacy callers, the dict for the classifier.
     for r in db.query(MasterAgent).filter(MasterAgent.is_active==True).all():
         cfg.master_agents.append(r.agent_name)
+        if r.agent_type in ("MASTER_AGENT", "GROUP"):
+            cfg.master_agent_classifications[r.agent_name] = r.agent_type
 
     # ── Skip Labels ───────────────────────────────────────────────────────────
     skip = db.query(ReferenceList).filter(

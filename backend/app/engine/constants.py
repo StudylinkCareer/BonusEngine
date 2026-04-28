@@ -1,12 +1,18 @@
 # =============================================================================
-# constants.py  |  StudyLink Bonus Engine v1.0
+# constants.py  |  StudyLink Bonus Engine
 # Replaces: modConstants.bas
 # =============================================================================
 
-# Scheme identifiers
-SCHEME_HCM_DIRECT = "HCM_DIRECT"
-SCHEME_HN_DIRECT  = "HN_DIRECT"
-SCHEME_CO_SUB     = "CO_SUB"
+# Scheme identifiers (Apr 2026 rebuild — 6 scheme model)
+# Schemes are split by role (CO vs Counsellor) AND by direct/sub/VP.
+# Office is now a separate dimension on ref_base_rates rather than a scheme
+# variant — the same scheme works in any office (HCM, HN, DN, MEL).
+SCHEME_CO_SUB     = "CO_SUB"       # Case Officer, Sub-agent
+SCHEME_CO_DIR     = "CO_DIR"       # Case Officer, Direct  (was HCM_DIRECT)
+SCHEME_CO_VP      = "CO_VP"        # Case Officer, VP
+SCHEME_COUNS_SUB  = "COUNS_SUB"    # Counsellor, Sub-agent
+SCHEME_COUNS_DIR  = "COUNS_DIR"    # Counsellor, Direct
+SCHEME_COUNS_VP   = "COUNS_VP"     # Counsellor, VP
 
 # Tier identifiers
 TIER_UNDER     = "UNDER"
@@ -16,7 +22,11 @@ TIER_MEET      = "MEET"
 TIER_OVER      = "OVER"
 
 # Office identifiers
-OFFICE_HCM = "HCM"; OFFICE_HN = "HN"; OFFICE_DN = "DN"; OFFICE_DEFAULT = "HCM"
+OFFICE_HCM     = "HCM"
+OFFICE_HN      = "HN"
+OFFICE_DN      = "DN"
+OFFICE_MEL     = "MEL"             # was VP_MEL
+OFFICE_DEFAULT = "HCM"
 
 # Institution types
 INST_DIRECT       = "DIRECT"

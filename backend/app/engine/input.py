@@ -185,6 +185,12 @@ def _v2_float(row, col_map, key, default: float = 0.0) -> float:
 
 def infer_institution_type(institution: str, system_type: str,
                            country: str = "") -> str:
+    # DEPRECATED Apr 2026 — no longer called by parse_crm_report. Kept only
+    # for backwards compatibility with any external scripts that import it.
+    # Canonical VBA engine reads institution_type as operator-set in col 28;
+    # auto-derivation here mis-tagged cases (e.g. `**` partner cases as GROUP).
+    # If you need to suggest a value to an operator, do so as a warning, not
+    # as an authoritative classification.
     inst = institution or ""; sys = (system_type or "").lower()
     ctry = (country or "").lower()
     if "vietnam" in ctry or "viet nam" in ctry:
@@ -257,7 +263,14 @@ def parse_crm_report(file_path: str, cfg: BonusConfig
             notes         = _get(row, col_map, "notes"),
             row_type      = ROW_BASE,
         )
-        c.institution_type = infer_institution_type(institution, system, country)
+        # Apr 2026: aligned with canonical VBA. institution_type is operator-
+        # set in col 28 (or via Review Board). The previous auto-classifier
+        # was a Python-only invention that mis-tagged out-of-system cases
+        # as GROUP based on `**` in the institution name. The VBA engine
+        # never auto-derives this field — operator/Review Board owns it.
+        # Default to DIRECT when blank; Review Board surfaces blanks for
+        # operator correction.
+        c.institution_type = INST_DIRECT
         cr = cfg.get_country(country)
         c.country_code    = cr.code
         c.is_flat_country  = cr.is_flat_country

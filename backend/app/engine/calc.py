@@ -250,6 +250,15 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         and c.course_start.month == month
     )
     if sr.is_carry_over and not same_period_enrol:
+        # Apr 2026: aligned with canonical VBA Step 4 — Counsellors received
+        # 100% on the prior month when this case was Current-Enrolled, so the
+        # carry-over month pays them 0. Only CO roles receive the priorRate/2
+        # carry-over (the remaining 50% of their split).
+        if is_counsellor:
+            c.bonus_enrolled = 0
+            c.base_rate      = 0
+            c.note_enrolled  = "Carry-over: Counsellor was paid 100% last month → 0 this month"
+            return
         if c.prior_month_rate <= 0 and scheme == SCHEME_CO_SUB:
             resolved_prior = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
             c.prior_month_rate = rates.get(resolved_prior, rates.get(TIER_UNDER, 700_000))
@@ -289,46 +298,27 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         c.bonus_enrolled = r; c.base_rate = r
         c.note_enrolled = f"Partner institution: {r:,.0f}"
         return
-    # Out-of-system enrolment (operator-flagged) — scheme-specific rate.
-    # HCM_DIRECT: 2× out_sys_co (800k for USA via GE/GEEBEE/GUS, AUS via
-    #             Can-Achieve, etc.) — out-of-system enrolment is rarer and
-    #             pays a doubled bonus.
-    # CO_SUB:     PARTNER rate (400k) — CO Sub officers earn the standard
-    #             partner rate on out-of-system referrals.
+    # Out-of-system enrolment (operator-flagged) — flat 400k regardless of scheme.
+    # Apr 2026: aligned with canonical VBA Step 6B which pays gRateHCMCO(0)=400k
+    # for all schemes. The previous Python-only doubling for direct schemes (800k)
+    # was an invention not present in the VBA engine.
+    # DIFFICULT_CASE service fee (col 20) adds 500k extra per VBA, but that is
+    # handled at Step 2.8b (service fee lookup) which fires before this step.
     if (sr.counts_as_enrolled
         and c.institution_type == INST_OUT_OF_SYS):
-        if scheme == SCHEME_CO_SUB:
-            r = rates.get("out_sys_co", 400_000)
-        else:
-            r = rates.get("out_sys_co", 400_000) * 2
+        r = rates.get("out_sys_co", 400_000)
         c.bonus_enrolled = r; c.base_rate = r
-        c.note_enrolled = f"Out-of-system enrolment ({scheme}): {r:,.0f}"
+        c.note_enrolled = f"Out-of-system enrolment: {r:,.0f}"
         return
 
-    # ── STEP 6.5: Enrolled at ** GROUP / MASTER / OUT_OF_SYSTEM ──────────────
-    # Apr 2026 (v6.4): a case enrolled through a double-star (**) partner
-    # institution that is also classified as GROUP / MASTER_AGENT / OUT_OF_SYSTEM
-    # receives a flat out-of-system rate (800k for HCM_DIRECT) — not the
-    # tier-based rate, and no package bonus on top. This codifies the rule
-    # that out-of-system enrolments don't compound with the standard tier and
-    # package incentive structure.
-    if (sr.counts_as_enrolled
-        and "**" in (c.institution or "")
-        and c.institution_type in (INST_GROUP, INST_MASTER_AGENT, INST_OUT_OF_SYS)):
-        r = rates.get("out_sys_co", 800_000) * 2  # out_sys_co=400k base, ** doubles to 800k
-        # NOTE: rate currently derived as 2× out_sys_co. If business changes the
-        # ** enrolled rate independently of the * fees-paid rate, add a separate
-        # ref_base_rates entry (e.g. tier='OUT_SYS_ENROLLED') and read it here.
-        c.bonus_enrolled = r
-        c.base_rate      = r
-        c.note_enrolled  = f"Enrolled out-of-system (**): {r:,.0f}"
-        # No package bonus, no priority — but pending add-on (Guardian/etc) still applies
-        if pending_addon > 0:
-            payout = pending_addon // 2 if pending_addon_share else pending_addon
-            c.bonus_enrolled += payout
-            c.note_enrolled = (c.note_enrolled +
-                f" | {pending_addon_label}: +{payout:,.0f}").strip(" | ")
-        return
+    # ── STEP 6.5: REMOVED (Apr 2026) ─────────────────────────────────────────
+    # Previously this block fired on `**` in institution + institution_type in
+    # (GROUP, MASTER_AGENT, OUT_OF_SYS) and paid 2× out_sys_co (800k). This was
+    # a Python-only invention not present in canonical VBA. The `**` notation
+    # is operator documentation in the institution name; institution_type (col 28)
+    # is the canonical signal for engine routing. Cases that should be treated
+    # as out-of-system enrolment are caught at Step 6 above by their explicit
+    # institution_type=OUT_OF_SYSTEM tag.
 
     # ── STEP 7: Base rate ─────────────────────────────────────────────────────
     resolved_tier = tier if tier != TIER_MEET else resolve_meet_tier(c.incentive, cfg)
@@ -362,21 +352,18 @@ def calc_single_case(c: CaseRecord, tier: str, target: int, enrolled: int,
         )
 
     # ── STEP 8: Split percentage ──────────────────────────────────────────────
+    # Apr 2026: aligned with canonical VBA. On Current-Enrolled status:
+    #   • Counsellor role         → 100% (paid full now; carry-over pays 0 next month)
+    #   • All CO roles (any tier) → 50% (remaining 50% paid as carry-over after visa)
+    # Previous Python-only "OVER tier = 100% for direct CO" rule was an invention
+    # not in the canonical VBA engine and has been removed.
     if sr.is_current_enrolled:
-        # CO_SUB always pays 50% on Current-Enrolled regardless of tier.
-        # HCM_DIRECT at OVER tier pays 100% (full lifetime amount this month
-        # because the staff has over-achieved their target). Other HCM_DIRECT
-        # tiers pay 50% upfront, 50% as carry-over when visa arrives.
-        # Counsellor role always pays 100%.
-        if scheme == SCHEME_CO_SUB:
-            split = 0.5
-            sfx = " | 50% chua co visa (CO_SUB)"
-        elif not is_counsellor and tier == TIER_OVER:
+        if is_counsellor:
             split = 1.0
-            sfx = " | 100% (Over target current-enrolled)"
+            sfx = " | 100% da nhap hoc (Counsellor)"
         else:
-            split = 1.0 if is_counsellor else 0.5
-            sfx = " | 100% da nhap hoc" if is_counsellor else " | 50% chua co visa"
+            split = 0.5
+            sfx = " | 50% chua co visa"
         c.note_enrolled = (c.note_enrolled + sfx).strip(" | ")
     elif sr.is_carry_over and same_period_enrol:
         # Same-period carry-over status: both enrolment and visa happened in
@@ -435,11 +422,11 @@ def _apply_package(c: CaseRecord, is_counsellor: bool,
         if pf:
             amt = pf.coun_bonus if is_counsellor else pf.co_bonus
             if amt > 0:
-                # Apr 2026: at OVER tier, current-enrolled receives the full
-                # package bonus (consistent with the full base rate paid in
-                # Step 8 — báo cáo treats the case lifetime amount as paid up
-                # front). Lower tiers still halve.
-                if sr.is_current_enrolled and tier != TIER_OVER:
+                # Apr 2026: aligned with canonical VBA. On Current-Enrolled,
+                # CO roles receive 50% of the package bonus (matching the 50%
+                # base-rate split). Counsellors receive 100% (matching their
+                # 100% base-rate split). No tier exception.
+                if sr.is_current_enrolled and not is_counsellor:
                     amt = amt // 2
                 c.bonus_enrolled += amt
                 c.note_enrolled = (
