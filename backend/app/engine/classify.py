@@ -137,7 +137,8 @@ def _infer_institution_type(
     group_agent_name: str,
     cfg: BonusConfig,
 ) -> str:
-    inst_low = (institution or "").lower()
+    inst_raw = institution or ""
+    inst_low = inst_raw.lower()
     grp_low  = (group_agent_name or "").lower()
 
     # ── Step 1: Vietnam-domestic ──────────────────────────────────────────────
@@ -150,7 +151,16 @@ def _infer_institution_type(
             return INST_BUV_VN
         return INST_OTHER_VN
 
-    # ── Step 2: Master agent / group lookup ───────────────────────────────────
+    # ── Step 2: `**` suffix → out-of-system enrolment ─────────────────────────
+    # Operators tag out-of-system enrolments with a double-asterisk after the
+    # institution name (e.g., "Victoria University - VU **"). This is the
+    # canonical signal in the source data — pre-dates the master-agent table,
+    # used consistently across years of báo cáo.
+    # Catches Strydom (SLC-13349) and similar cases.
+    if "**" in inst_raw:
+        return INST_OUT_OF_SYS
+
+    # ── Step 3: Master agent / group lookup ───────────────────────────────────
     # Iterate ref_master_agents, longest names first so "Education Centre of
     # Australia (ECA)" matches before plain "ECA" if both were in the table.
     for agent_name in sorted(
@@ -160,15 +170,17 @@ def _infer_institution_type(
         if ma_low in inst_low or (grp_low and ma_low in grp_low):
             agent_type = cfg.master_agent_classifications[agent_name]
             if agent_type == "MASTER_AGENT":
-                # Out-of-system enrolment via third-party master agent.
-                # Per VBA Step 6B: flat 400k rate.
                 return INST_OUT_OF_SYS
             if agent_type == "GROUP":
-                # Direct partnership through an institution group.
-                # Per VBA Step 7B: full tier rate, 0.7 KPI weight.
                 return INST_GROUP
 
-    # ── Step 3: No match — leave as DIRECT ────────────────────────────────────
+    # ── Step 4: Single `*` suffix without master-agent match → out-of-system ──
+    # Single-asterisk indicates partner institution where StudyLink doesn't
+    # have a direct enrolment relationship. Treated as out-of-system per VBA.
+    if "*" in inst_raw:
+        return INST_OUT_OF_SYS
+
+    # ── Step 5: No match — leave as DIRECT ────────────────────────────────────
     return INST_DIRECT
 
 

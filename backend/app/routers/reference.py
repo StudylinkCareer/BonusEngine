@@ -83,6 +83,137 @@ def get_all_lists(db: Session = Depends(get_db),
 
 
 # =============================================================================
+# Per-type reference list — used by Review Board cell dropdowns.
+# Returns { canonical: [{ value, display }, ...] } so the frontend can render
+# an enforced dropdown when an editable cell has ref:'<type>' metadata.
+# =============================================================================
+
+@router.get("/list/{ref_type}")
+def get_one_list(ref_type: str, db: Session = Depends(get_db),
+                 current_user: User = Depends(get_current_user)):
+    """Return a single reference list in the shape the Review Board expects.
+
+    Reads from the same tables as /reference/lists but returns one type at a
+    time and wraps it in {canonical: [{value, display}, ...]} so the frontend
+    dropdown can render directly without re-shaping.
+
+    For service_fee_type the display includes the bonus amount where known
+    so operators can pick the right code (e.g., "STUDENT_VISA_RENEWAL — 400k").
+    """
+    def _from_reference_list(name):
+        rows = (db.query(ReferenceList)
+                .filter(ReferenceList.list_name == name,
+                        ReferenceList.is_active == True)
+                .order_by(ReferenceList.sort_order, ReferenceList.value)
+                .all())
+        return [{"value": r.value, "display": r.value} for r in rows]
+
+    if ref_type == "institution_type":
+        opts = _from_reference_list("institution_type")
+        # Hardcoded fallback if the table is empty — matches engine constants
+        if not opts:
+            opts = [{"value": v, "display": v} for v in
+                    ("DIRECT", "MASTER_AGENT", "GROUP", "OUT_OF_SYSTEM",
+                     "RMIT_VN", "BUV_VN", "OTHER_VN")]
+        return {"canonical": opts}
+
+    if ref_type == "service_fee_type":
+        rows = (db.query(ServiceFeeRate)
+                .filter(ServiceFeeRate.is_active == True)
+                .order_by(ServiceFeeRate.service_code).all())
+        opts = []
+        for r in rows:
+            amt = getattr(r, "co_amount", None) or 0
+            label = (f"{r.service_code} — {amt/1000:.0f}k"
+                     if amt else r.service_code)
+            opts.append({"value": r.service_code, "display": label})
+        # Always include NONE as the no-fee option
+        opts.insert(0, {"value": "NONE", "display": "NONE"})
+        return {"canonical": opts}
+
+    if ref_type == "package_type":
+        opts = _from_reference_list("package_type")
+        if not opts:
+            opts = [{"value": "NONE", "display": "NONE"}]
+        elif not any(o["value"] == "NONE" for o in opts):
+            opts.insert(0, {"value": "NONE", "display": "NONE"})
+        return {"canonical": opts}
+
+    if ref_type == "deferral":
+        opts = _from_reference_list("deferral")
+        if not opts:
+            opts = [{"value": v, "display": v} for v in
+                    ("NONE", "FEE_TRANSFERRED", "DEFERRED",
+                     "FEE_WAIVED", "NO_SERVICE")]
+        return {"canonical": opts}
+
+    if ref_type == "office":
+        return {"canonical": [{"value": v, "display": v}
+                              for v in ("HCM", "HN", "DN", "MEL")]}
+
+    if ref_type == "row_type":
+        return {"canonical": [{"value": v, "display": v}
+                              for v in ("BASE", "ADDON")]}
+
+    if ref_type == "scheme":
+        return {"canonical": [{"value": v, "display": v} for v in (
+            "CO_DIR", "CO_SUB", "CO_VP",
+            "COUNS_DIR", "COUNS_SUB", "COUNS_VP",
+        )]}
+
+    if ref_type == "handover" or ref_type == "case_transition":
+        return {"canonical": [{"value": v, "display": v}
+                              for v in ("YES", "NO")]}
+
+    if ref_type == "country":
+        rows = (db.query(CountryCode)
+                .filter(CountryCode.is_active == True)
+                .order_by(CountryCode.country_name).all())
+        return {"canonical": [{"value": r.country_name,
+                               "display": r.country_name} for r in rows]}
+
+    if ref_type == "client_type":
+        rows = (db.query(ClientTypeMap)
+                .filter(ClientTypeMap.is_active == True).all())
+        seen = set()
+        opts = []
+        for r in rows:
+            if r.raw_value in seen: continue
+            seen.add(r.raw_value)
+            opts.append({"value": r.raw_value, "display": r.raw_value})
+        return {"canonical": sorted(opts, key=lambda o: o["value"])}
+
+    if ref_type == "app_status":
+        rows = (db.query(ReferenceList)
+                .filter(ReferenceList.list_name == "application_status",
+                        ReferenceList.is_active == True)
+                .order_by(ReferenceList.sort_order).all())
+        return {"canonical": [{"value": r.value, "display": r.value}
+                              for r in rows]}
+
+    if ref_type == "system_type":
+        opts = _from_reference_list("system_type")
+        if not opts:
+            opts = [{"value": v, "display": v} for v in
+                    ("Trong hệ thống", "Ngoài hệ thống")]
+        return {"canonical": opts}
+
+    if ref_type == "presales_agent":
+        names = [r.full_name for r in
+                 db.query(StaffName).filter(StaffName.is_active == True)
+                 .order_by(StaffName.full_name).all()]
+        return {"canonical": [{"value": "NONE", "display": "NONE"}] +
+                             [{"value": n, "display": n} for n in names]}
+
+    # Generic fallback — try the catch-all reference_list table by name.
+    opts = _from_reference_list(ref_type)
+    if opts:
+        return {"canonical": opts}
+
+    raise HTTPException(404, f"Unknown reference type: {ref_type}")
+
+
+# =============================================================================
 # STAFF NAMES
 # =============================================================================
 
